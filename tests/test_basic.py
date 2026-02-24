@@ -14,21 +14,23 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 try:
     from version import get_version_info, __version__
 except ImportError:
-    # Define fallback version for testing
-    __version__ = "0.5.0"
+    # Fallback version for testing if version.py can't be imported
+    __version__ = "unknown"
 
 class BasicTests(unittest.TestCase):
     """Basic functionality tests."""
 
     def test_version_format(self):
         """Test that version is properly formatted."""
-        # Either imported from version.py or default
         self.assertIsNotNone(__version__)
-        
+
+        if __version__ == "unknown":
+            self.skipTest("version.py not importable, skipping format check")
+
         # Should be in format x.y.z
         parts = __version__.split('.')
         self.assertEqual(len(parts), 3, "Version should have 3 components (x.y.z)")
-        
+
         # Each part should be a number
         for part in parts:
             self.assertTrue(part.isdigit(), f"Version part '{part}' should be a number")

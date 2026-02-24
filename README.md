@@ -6,28 +6,31 @@
 [![GitHub Workflow Status][workflow-badge]][workflow-url]
 [![Version][version-badge]][version-url]
 [![Python][python-badge]][python-url]
-[![License][license-badge]][license-url]
+[![Installs][installs-badge]][installs-url]
 [![GitHub Discussions][discussions-badge]][discussions-url]
+[![License][license-badge]][license-url]
 
 </div>
 
 A one-click silent background solution to fix the "No Internet, Secured" Windows connectivity detection issue when Windows incorrectly reports no internet connection despite having working connectivity. 
 
-Quick download links: [`NCSI_Resolver_v0.7.4_setup.exe`](https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/releases/download/v0.7.4-alpha/NCSI_Resolver_v0.7.4_setup.exe) or [source zip](https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/archive/refs/tags/v0.7.4-alpha.zip) 
+Quick download links: [`NCSI_Resolver_v0.7.4_setup.exe`](https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/releases/download/v0.7.4-alpha/NCSI_Resolver_v0.7.4_setup.exe) or [source zip](https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/archive/refs/tags/v0.7.4-alpha.zip) 
 
 **NOTE**: *It take upwards of a few minutes for Windows to notice the change or requires a system restart*
 
 
-[workflow-badge]: https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/actions/workflows/python.yml/badge.svg
-[workflow-url]: https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/actions
-[version-badge]: https://img.shields.io/github/v/release/djdarcy/Windows-No-Internet-Secured-BUGFIX?sort=semver&color=darkgreen
-[version-url]: https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/releases
+[workflow-badge]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/actions/workflows/python.yml/badge.svg
+[workflow-url]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/actions
+[version-badge]: https://img.shields.io/github/v/release/DazzleTools/Windows-No-Internet-Secured-BUGFIX?sort=semver&color=darkgreen
+[version-url]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/releases
 [python-badge]: https://img.shields.io/badge/python-3.8%2B-darkgreen
 [python-url]: https://www.python.org/downloads/
+[installs-badge]: https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/djdarcy/1362078955559665832b72835b309e98/raw/installs.json
+[installs-url]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/releases
 [license-badge]: https://img.shields.io/badge/license-MIT-blue
-[license-url]: https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/blob/main/LICENSE
-[discussions-badge]: https://img.shields.io/github/discussions/djdarcy/Windows-No-Internet-Secured-BUGFIX
-[discussions-url]: https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/discussions
+[license-url]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/blob/main/LICENSE
+[discussions-badge]: https://img.shields.io/github/discussions/DazzleTools/Windows-No-Internet-Secured-BUGFIX
+[discussions-url]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/discussions
 
 
 ## Overview
@@ -70,7 +73,7 @@ For those curious about the innerworkings of NCSI, the official documentation ca
 
 ### Quick Install
 
-1. Download the latest release from the [Releases page](https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/releases) or the installer [NCSI_Resolver_v0.7.4_setup.exe](https://github.com/djdarcy/Windows-No-Internet-Secured-BUGFIX/releases/download/v0.7.4-alpha/NCSI_Resolver_v0.7.4_setup.exe) 
+1. Download the latest release from the [Releases page](https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/releases) or the installer [NCSI_Resolver_v0.7.4_setup.exe](https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/releases/download/v0.7.4-alpha/NCSI_Resolver_v0.7.4_setup.exe) 
 
 2. Extract the ZIP file to a temporary location
 3. Right-click on `_install.bat` and select "Run as administrator"

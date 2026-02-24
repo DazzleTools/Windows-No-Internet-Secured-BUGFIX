@@ -55,7 +55,7 @@ try:
     __description__ = __version_info__["description"]
 except ImportError:
     # Fallback version info if version.py is missing
-    __version__ = "0.7.4"
+    __version__ = "unknown"
     __description__ = "NCSI Resolver Service Installer"
 
 # Import system configuration module

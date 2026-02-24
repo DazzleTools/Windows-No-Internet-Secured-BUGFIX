@@ -13,6 +13,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+# Get version from single source of truth
+try:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from version import __version__ as _version
+except ImportError:
+    _version = "unknown"
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +48,7 @@ DEFAULT_CONFIG_PATHS = [
 
 # Default configuration values if no config file is found
 DEFAULT_CONFIG = {
-    "version": "0.7.4",
+    "version": _version,
     "description": "Windows Network Connectivity Status Indicator Resolver",
     "installation": {
         "default_dir": "C:\\Program Files\\NCSI Resolver",

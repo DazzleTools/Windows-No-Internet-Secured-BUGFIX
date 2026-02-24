@@ -5,6 +5,19 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5-alpha] - 2026-02-24
+
+### Added
+- GitHub Action workflow to track cumulative download and clone counts
+- Combined installs badge (downloads + clones) in README
+
+### Changed
+- Consolidate version to single source of truth (`version.py`)
+- Python module fallback versions changed from hardcoded strings to `"unknown"`
+- `config_manager.py` now imports version from `version.py` instead of hardcoding
+- Update badge references from `djdarcy` to `DazzleTools` (org transfer)
+- Move license badge to end of badge row in README
+
 ## [0.7.4-alpha] - 2025-10-26
 
 ### Fixed

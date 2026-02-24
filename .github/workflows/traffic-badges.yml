@@ -1,0 +1,126 @@
+name: Track Downloads & Clones
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # Daily at 3am UTC
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  update-badges:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch stats and update gist
+        uses: actions/github-script@v7
+        env:
+          GIST_ID: ${{ vars.TRAFFIC_GIST_ID }}
+        with:
+          github-token: ${{ secrets.TRAFFIC_GIST_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const gistId = process.env.GIST_ID;
+
+            // 1. Total release asset downloads
+            let totalDownloads = 0;
+            const releases = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
+            for (const release of releases.data) {
+              for (const asset of release.assets) {
+                totalDownloads += asset.download_count;
+              }
+            }
+            console.log(`Release downloads: ${totalDownloads}`);
+
+            // 2. Clone count (last 14 days from API)
+            let recentClones = 0;
+            try {
+              const traffic = await github.rest.repos.getClones({ owner, repo, per: "day" });
+              recentClones = traffic.data.count;
+              console.log(`Recent clones (14d): ${recentClones}`);
+            } catch (e) {
+              console.log(`Could not fetch clones: ${e.message}`);
+            }
+
+            // 3. Load previous state from gist to accumulate clones
+            let state = { totalClones: 0, lastSeenDates: [], totalDownloads: 0 };
+            if (gistId) {
+              try {
+                const gist = await github.rest.gists.get({ gist_id: gistId });
+                const stateFile = gist.data.files["state.json"];
+                if (stateFile) {
+                  state = JSON.parse(stateFile.content);
+                }
+              } catch (e) {
+                console.log(`Could not load gist state: ${e.message}`);
+              }
+            }
+
+            // 4. Accumulate clones (only count new days we haven't seen)
+            let newClones = 0;
+            try {
+              const traffic = await github.rest.repos.getClones({ owner, repo, per: "day" });
+              const seenSet = new Set(state.lastSeenDates || []);
+              for (const day of traffic.data.clones) {
+                if (!seenSet.has(day.timestamp)) {
+                  newClones += day.count;
+                }
+              }
+              // Update seen dates (keep last 30 to handle overlaps)
+              const allDates = traffic.data.clones.map(d => d.timestamp);
+              state.lastSeenDates = allDates.slice(-30);
+            } catch (e) {
+              console.log(`Clone accumulation error: ${e.message}`);
+            }
+
+            state.totalClones = (state.totalClones || 0) + newClones;
+            state.totalDownloads = totalDownloads;
+            console.log(`Accumulated clones: ${state.totalClones} (+${newClones} new)`);
+
+            // 5. Build shields.io endpoint JSON badges
+            const combined = state.totalDownloads + state.totalClones;
+            const dlsClonesBadge = {
+              schemaVersion: 1,
+              label: "installs",
+              message: `${combined} (${state.totalDownloads} dls + ${state.totalClones} clones)`,
+              color: "blue"
+            };
+
+            const downloadsBadge = {
+              schemaVersion: 1,
+              label: "downloads",
+              message: `${state.totalDownloads}`,
+              color: "blue"
+            };
+
+            const clonesBadge = {
+              schemaVersion: 1,
+              label: "clones",
+              message: `${state.totalClones}`,
+              color: "blue"
+            };
+
+            // 6. Update gist
+            const files = {
+              "installs.json": { content: JSON.stringify(dlsClonesBadge, null, 2) },
+              "downloads.json": { content: JSON.stringify(downloadsBadge, null, 2) },
+              "clones.json": { content: JSON.stringify(clonesBadge, null, 2) },
+              "state.json": { content: JSON.stringify(state, null, 2) }
+            };
+
+            if (gistId) {
+              await github.rest.gists.update({ gist_id: gistId, files });
+              console.log(`Updated gist: ${gistId}`);
+            } else {
+              const newGist = await github.rest.gists.create({
+                description: `${owner}/${repo} traffic badges`,
+                public: true,
+                files
+              });
+              console.log(`Created new gist: ${newGist.data.id}`);
+              console.log(`⚠️  Set TRAFFIC_GIST_ID repo variable to: ${newGist.data.id}`);
+            }
+
+            console.log(`\nBadge URLs (after setting GIST_ID):`);
+            const gid = gistId || "<GIST_ID>";
+            console.log(`Installs: https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/${owner}/${gid}/raw/installs.json`);
+            console.log(`Downloads: https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/${owner}/${gid}/raw/downloads.json`);
+            console.log(`Clones: https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/${owner}/${gid}/raw/clones.json`);
