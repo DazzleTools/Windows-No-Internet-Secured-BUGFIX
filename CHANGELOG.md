@@ -5,6 +5,14 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6-alpha] - 2026-02-24
+
+### Added
+- Cascading recency suffix on installs badge — shows `(+N 24h)`, `(+N wk)`,
+  or `(+N mo)` based on most recent activity window with installs
+- Rolling 31-day daily history in gist state for recency computation
+- Download delta tracking (diffs cumulative total between runs)
+
 ## [0.7.5-alpha] - 2026-02-24
 
 ### Added
