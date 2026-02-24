@@ -5,6 +5,15 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7-alpha] - 2026-02-24
+
+### Added
+- GitHub Pages stats dashboard (`docs/stats/index.html`) with daily activity
+  chart, summary cards, and activity window indicators
+- Dashboard fetches live data from public gist — zero daily commits required
+- "All History" toggle to load monthly archive data for long-term trends
+- Installs badge now links to stats dashboard instead of releases page
+
 ## [0.7.6-alpha] - 2026-02-24
 
 ### Added
