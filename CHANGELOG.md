@@ -5,6 +5,29 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9-alpha] - 2026-02-25
+
+### Fixed
+- Date attribution: daily history entries now use Traffic API timestamps
+  instead of wall-clock time, preventing yesterday's data from being
+  filed under today
+- Badge recency suffix uses ~24h window (yesterday + today partial)
+  instead of only the last entry, which could misattribute data
+- todayViews had same mislabeling bug as todayClones — both now fixed
+
+### Added
+- CI clone detection: counts `actions/checkout` operations per workflow
+  run via Actions API, stores `ciCheckouts` and `organicClones` per day
+- `capturedAt` timestamp on daily history entries records when the script
+  ran (operational metadata, separate from data date)
+- Zero-data days explicitly recorded (`clones: 0`) to distinguish
+  "nothing happened" from "script didn't run"
+- `state.ciCheckouts` map with per-workflow breakdown and per-run arrays
+  to detect matrix changes
+
+### Changed
+- Dates normalized to `YYYY-MM-DDT00:00:00Z` format in dedup step
+
 ## [0.7.8-alpha] - 2026-02-24
 
 ### Added
