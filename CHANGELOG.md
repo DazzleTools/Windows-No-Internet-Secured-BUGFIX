@@ -28,6 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored as `state.popularPaths` for Views tab display
 - Archive includes unique clone and view counts in both cumulative
   totals and monthly summaries
+- Dashboard: unique clone count displayed on Installs tab card
+- Dashboard: unique viewer count displayed on Views tab cards (total + today)
+- Dashboard: Unique Clones line on Installs chart (dotted light purple `#d4b8ff`)
+- Dashboard: Unique Views line on Views chart (dotted light blue `#8ec5ff`)
+- Dashboard: Popular Pages table on Views tab — top 10 visited pages with
+  cleaned titles, monospace paths, view/unique counts, and clickable links
+- Dashboard: Overview tab toggles for Unique Clones and Unique Views
+  (on by default; raw Clones/Views toggled off to highlight meaningful signal)
+- `tests/one-offs/verify_dashboard_ids.py` — validates JS setText/getElementById
+  references against HTML element IDs
+- `tests/one-offs/backfill_unique_counts.py` — one-time gist backfill utility
+  for unique clone/view data with `--dry-run` support
+
+### Changed
+- Overview tab toggle order: metrics paired by type (Views/Unique Views,
+  Clones/Unique Clones, Downloads, Installs) with unique counts on by default
+- Popular Pages titles cleaned for UTF-8 encoding artifacts (`Â·` → `·` → ` - `)
 
 ## [0.7.9-alpha] - 2026-02-25
 
