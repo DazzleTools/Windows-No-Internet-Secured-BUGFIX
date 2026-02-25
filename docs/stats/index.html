@@ -405,6 +405,28 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
         .loading p { color: var(--text-secondary); }
+        .spinner-sm {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 0.4rem;
+        }
+        .stats-loading {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+        }
+        .stats-error {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+            font-style: italic;
+        }
 
         /* Error */
         .error {
@@ -809,6 +831,7 @@
                 <!-- Commit Activity -->
                 <section class="chart-section">
                     <h2>Commit Activity <span class="chart-note">(52 weeks &middot; click bar to view commits)</span></h2>
+                    <div id="commit-status" class="stats-loading"><div class="spinner-sm"></div> Fetching from GitHub...</div>
                     <div class="chart-container">
                         <canvas id="commitChart"></canvas>
                     </div>
@@ -817,6 +840,7 @@
                 <!-- Code Frequency -->
                 <section class="chart-section">
                     <h2>Code Frequency <span class="chart-note">(additions &amp; deletions)</span></h2>
+                    <div id="codefreq-status" class="stats-loading"><div class="spinner-sm"></div> Fetching from GitHub...</div>
                     <div class="chart-container">
                         <canvas id="codeFreqChart"></canvas>
                     </div>
@@ -825,6 +849,7 @@
                 <!-- Participation -->
                 <section class="chart-section">
                     <h2>Participation <span class="chart-note">(maintainer vs community, 52 weeks &middot; click to view)</span></h2>
+                    <div id="participation-status" class="stats-loading"><div class="spinner-sm"></div> Fetching from GitHub...</div>
                     <div class="chart-container">
                         <canvas id="participationChart"></canvas>
                     </div>
@@ -833,15 +858,15 @@
                 <!-- Punch Card -->
                 <section class="chart-section">
                     <h2>Punch Card <span class="chart-note">(commits by day &amp; hour)</span></h2>
+                    <div id="punchcard-status" class="stats-loading"><div class="spinner-sm"></div> Fetching from GitHub...</div>
                     <div id="punch-card-container" style="overflow-x: auto;"></div>
                 </section>
 
                 <!-- Contributors -->
                 <section class="activity-section">
                     <h2>Contributors</h2>
-                    <div id="contributors-list" class="contributor-grid">
-                        <p style="color: var(--text-secondary); font-size: 0.85rem;">Loading contributors...</p>
-                    </div>
+                    <div id="contributors-status" class="stats-loading"><div class="spinner-sm"></div> Fetching from GitHub...</div>
+                    <div id="contributors-list" class="contributor-grid"></div>
                 </section>
             </div>
         </main>
@@ -2186,22 +2211,45 @@
             return null;
         }
 
+        function setStatsStatus(id, state) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (state === 'done') {
+                el.style.display = 'none';
+            } else if (state === 'error') {
+                el.className = 'stats-error';
+                el.innerHTML = 'GitHub is still computing this data. Refresh to try again.';
+            }
+        }
+
         async function fetchDevStatistics() {
             // Fetch all 5 statistics endpoints in parallel, render each as it arrives
             // (contributors can take 30s+ on cold starts — don't block other charts)
-            fetchStatsEndpoint('commit_activity').then(function(d) { if (d) renderCommitActivity(d); });
-            fetchStatsEndpoint('code_frequency').then(function(d) { if (d) renderCodeFrequency(d); });
+            fetchStatsEndpoint('commit_activity').then(function(d) {
+                if (d) { renderCommitActivity(d); setStatsStatus('commit-status', 'done'); }
+                else setStatsStatus('commit-status', 'error');
+            });
+            fetchStatsEndpoint('code_frequency').then(function(d) {
+                if (d) { renderCodeFrequency(d); setStatsStatus('codefreq-status', 'done'); }
+                else setStatsStatus('codefreq-status', 'error');
+            });
             fetchStatsEndpoint('contributors').then(function(d) {
                 if (d) {
                     renderContributors(d);
-                    // Set primary author from top contributor (for org-owned repos where owner != committer)
                     if (d.length > 0 && d[0].author) primaryAuthor = d[0].author.login;
+                    setStatsStatus('contributors-status', 'done');
                 } else {
-                    document.getElementById('contributors-list').innerHTML = '<p style="color: var(--text-secondary); font-size: 0.85rem;">GitHub is computing contributor stats. Refresh to try again.</p>';
+                    setStatsStatus('contributors-status', 'error');
                 }
             });
-            fetchStatsEndpoint('participation').then(function(d) { if (d) renderParticipation(d); });
-            fetchStatsEndpoint('punch_card').then(function(d) { if (d) renderPunchCard(d); });
+            fetchStatsEndpoint('participation').then(function(d) {
+                if (d) { renderParticipation(d); setStatsStatus('participation-status', 'done'); }
+                else setStatsStatus('participation-status', 'error');
+            });
+            fetchStatsEndpoint('punch_card').then(function(d) {
+                if (d) { renderPunchCard(d); setStatsStatus('punchcard-status', 'done'); }
+                else setStatsStatus('punchcard-status', 'error');
+            });
         }
 
         // Store week timestamps for clickable bars

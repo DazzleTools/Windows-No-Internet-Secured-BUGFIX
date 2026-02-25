@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dev tab: Contributors list with avatars, commit counts
 - Dev tab: Operational status section (data freshness indicator, schedule, retention)
 - Client-side GitHub Statistics API with `sessionStorage` caching and 202-retry logic
+- Dev tab: loading indicators with inline spinner for each GitHub stats section
+- Dev tab: error state messaging when GitHub stats computation times out
 
 ### Changed
 - Chart visual hierarchy swapped: unique lines are now solid (primary signal),
