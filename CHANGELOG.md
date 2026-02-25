@@ -5,6 +5,22 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.10-alpha] - 2026-02-25
+
+### Fixed
+- Chart projection: rewrite `projectTrailingZeros` to be date-aware —
+  only project today's incomplete zero from yesterday's confirmed value;
+  past days with 0 are real data, not projected
+- Installs tab chart: all three lines (Total, Clones, Downloads) now
+  use trailing-zero projection with dashed line indicator
+- Overview tab chart: Clones, Downloads, and Total Installs lines now
+  use projection (previously only Views did)
+- Chart totals computed from organic values instead of raw `d.total`
+
+### Added
+- `workflow_run` trigger: Track Downloads & Clones now runs automatically
+  after Python Tests completes, capturing accurate CI checkout counts
+
 ## [0.7.9-alpha] - 2026-02-25
 
 ### Fixed

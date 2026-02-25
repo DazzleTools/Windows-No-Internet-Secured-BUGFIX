@@ -694,23 +694,35 @@
             }, 0);
         }
 
-        // Detect trailing zeros and replace with last real value for projection.
+        // Project today's incomplete zero from yesterday's confirmed value.
+        // Past days with 0 are real data (validated by the 3AM UTC recheck).
+        // Only today's 0 is uncertain — the day hasn't finished yet.
         // Returns { data: [...], projectedFrom: index } where projectedFrom is
         // the first projected index. If no projection, projectedFrom === data.length.
-        function projectTrailingZeros(values) {
-            var lastRealIdx = values.length - 1;
-            while (lastRealIdx >= 0 && values[lastRealIdx] === 0) {
-                lastRealIdx--;
-            }
-            if (lastRealIdx < 0 || lastRealIdx === values.length - 1) {
+        function projectTrailingZeros(values, dates) {
+            if (!dates || values.length < 2) {
                 return { data: values, projectedFrom: values.length };
             }
-            var result = values.slice();
-            var lastVal = result[lastRealIdx];
-            for (var i = lastRealIdx + 1; i < result.length; i++) {
-                result[i] = lastVal;
+
+            var lastIdx = values.length - 1;
+            var today = new Date().toISOString().slice(0, 10);
+            var lastDate = (dates[lastIdx] || '').slice(0, 10);
+
+            // Only project if the last entry is today AND its value is 0
+            if (values[lastIdx] !== 0 || lastDate !== today) {
+                return { data: values, projectedFrom: values.length };
             }
-            return { data: result, projectedFrom: lastRealIdx + 1 };
+
+            // Today's 0 → project from yesterday's confirmed value
+            var result = values.slice();
+            result[lastIdx] = result[lastIdx - 1];
+
+            // If yesterday was also 0, no visual change — no projection indicator needed
+            if (result[lastIdx] === 0) {
+                return { data: result, projectedFrom: values.length };
+            }
+
+            return { data: result, projectedFrom: lastIdx };
         }
 
         // Build Chart.js segment config for dashed projection from a given index.
@@ -870,9 +882,13 @@
             }
 
             var labels = history.map(function(d) { return formatDate(d.date); });
-            var totals = history.map(function(d) { return d.total || 0; });
-            var clones = history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); });
-            var downloads = history.map(function(d) { return d.downloads || 0; });
+            var dates = history.map(function(d) { return d.date; });
+            var clonesProj = projectTrailingZeros(history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); }), dates);
+            var downloadsProj = projectTrailingZeros(history.map(function(d) { return d.downloads || 0; }), dates);
+            var clones = clonesProj.data;
+            var downloads = downloadsProj.data;
+            var totals = clones.map(function(c, i) { return c + downloads[i]; });
+            var projectedFrom = Math.min(clonesProj.projectedFrom, downloadsProj.projectedFrom);
 
             // Check if any line matches the total exactly at every point
             // If so, render total as area-only (no top line) so the matching line stays visible
@@ -901,6 +917,7 @@
                             pointRadius: totalBorderWidth > 0 ? pointSize : 0,
                             pointHoverRadius: totalBorderWidth > 0 ? pointSize + 2 : 0,
                             borderWidth: totalBorderWidth,
+                            segment: projectionSegmentConfig(projectedFrom, totals.length),
                             order: 2  // render behind lines
                         },
                         {
@@ -913,6 +930,7 @@
                             pointRadius: smallPoint,
                             pointHoverRadius: smallPoint + 2,
                             borderWidth: 2,
+                            segment: projectionSegmentConfig(clonesProj.projectedFrom, clones.length),
                             order: 1  // render on top
                         },
                         {
@@ -925,6 +943,7 @@
                             pointRadius: smallPoint,
                             pointHoverRadius: smallPoint + 2,
                             borderWidth: 2,
+                            segment: projectionSegmentConfig(downloadsProj.projectedFrom, downloads.length),
                             order: 1
                         }
                     ]
@@ -1101,8 +1120,9 @@
             if (history.length === 0) return;
 
             var labels = history.map(function(d) { return formatDate(d.date); });
+            var dates = history.map(function(d) { return d.date; });
             var viewsRaw = history.map(function(d) { return d.views || 0; });
-            var proj = projectTrailingZeros(viewsRaw);
+            var proj = projectTrailingZeros(viewsRaw, dates);
             var hasProjection = proj.projectedFrom < proj.data.length;
 
             setText('views-chart-note', '(' + history.length + ' days)');
@@ -1440,6 +1460,7 @@
             setText('ov-forks', fmt(state.forks || 0));
 
             var labels = history.map(function(d) { return formatDate(d.date); });
+            var dates = history.map(function(d) { return d.date; });
             var datasets = [];
 
             var showViews = document.getElementById('ov-toggle-views').checked;
@@ -1448,9 +1469,10 @@
             var showInstalls = document.getElementById('ov-toggle-installs').checked;
 
             if (showInstalls) {
+                var installsProj = projectTrailingZeros(history.map(function(d) { return (d.organicClones !== undefined ? d.organicClones : (d.clones || 0)) + (d.downloads || 0); }), dates);
                 datasets.push({
                     label: 'Total Installs',
-                    data: history.map(function(d) { return d.total || 0; }),
+                    data: installsProj.data,
                     borderColor: 'transparent',
                     backgroundColor: 'rgba(88, 166, 255, 0.12)',
                     fill: true,
@@ -1463,7 +1485,7 @@
 
             if (showViews) {
                 var viewsRaw = history.map(function(d) { return d.views || 0; });
-                var viewsProj = projectTrailingZeros(viewsRaw);
+                var viewsProj = projectTrailingZeros(viewsRaw, dates);
                 var viewsDs = {
                     label: 'Views',
                     data: viewsProj.data,
@@ -1483,9 +1505,11 @@
             }
 
             if (showClones) {
-                datasets.push({
+                var clonesRaw = history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); });
+                var clonesProj = projectTrailingZeros(clonesRaw, dates);
+                var clonesDs = {
                     label: 'Clones',
-                    data: history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); }),
+                    data: clonesProj.data,
                     borderColor: '#bc8cff',
                     backgroundColor: 'transparent',
                     fill: false,
@@ -1493,14 +1517,18 @@
                     pointRadius: 2,
                     pointHoverRadius: 4,
                     borderWidth: 2,
+                    segment: projectionSegmentConfig(clonesProj.projectedFrom, clonesProj.data.length),
                     order: 1
-                });
+                };
+                datasets.push(clonesDs);
             }
 
             if (showDownloads) {
-                datasets.push({
+                var downloadsRaw = history.map(function(d) { return d.downloads || 0; });
+                var downloadsProj = projectTrailingZeros(downloadsRaw, dates);
+                var downloadsDs = {
                     label: 'Downloads',
-                    data: history.map(function(d) { return d.downloads || 0; }),
+                    data: downloadsProj.data,
                     borderColor: '#3fb950',
                     backgroundColor: 'transparent',
                     fill: false,
@@ -1508,8 +1536,10 @@
                     pointRadius: 2,
                     pointHoverRadius: 4,
                     borderWidth: 2,
+                    segment: projectionSegmentConfig(downloadsProj.projectedFrom, downloadsProj.data.length),
                     order: 1
-                });
+                };
+                datasets.push(downloadsDs);
             }
 
             destroyChart('overviewChart');

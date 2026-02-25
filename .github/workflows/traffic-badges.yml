@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "0 3 * * *"  # Daily at 3am UTC
   workflow_dispatch:       # Manual trigger
+  workflow_run:            # Run after CI to capture accurate CI checkout counts
+    workflows: ["Python Tests"]
+    types: [completed]
 
 jobs:
   update-badges:
