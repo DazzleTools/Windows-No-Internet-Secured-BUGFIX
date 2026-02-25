@@ -5,6 +5,25 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8-alpha] - 2026-02-24
+
+### Added
+- Tabbed dashboard: Installs, Views, Community, Overview
+- Views tab with daily chart, referrers table, top referrer card
+- Community tab with star history (client-side from stargazers API),
+  forks, issues, and daily community trends chart (dual-axis)
+- Overview tab with toggleable multi-metric chart
+- Trailing-zero projection: dashed line for incomplete data points
+- Privacy note explaining all data comes from GitHub's traffic API
+- Views badge (`views.json`) in gist output
+
+### Changed
+- Workflow collects views, stars, forks, issues, referrers daily
+- Daily history entries include views, stars, forks, openIssues
+- Chart dates use UTC to prevent timezone day-shift
+- Deduplicate daily history entries by UTC date
+- Total renders as area-only when overlapping individual metric lines
+
 ## [0.7.7-alpha] - 2026-02-24
 
 ### Added
