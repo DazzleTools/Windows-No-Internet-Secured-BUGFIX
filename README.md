@@ -26,7 +26,7 @@ Quick download links: [`NCSI_Resolver_v0.7.4_setup.exe`](https://github.com/Dazz
 [python-badge]: https://img.shields.io/badge/python-3.8%2B-darkgreen
 [python-url]: https://www.python.org/downloads/
 [installs-badge]: https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/djdarcy/1362078955559665832b72835b309e98/raw/installs.json
-[installs-url]: https://dazzletools.github.io/Windows-No-Internet-Secured-BUGFIX/stats/
+[installs-url]: https://dazzletools.github.io/Windows-No-Internet-Secured-BUGFIX/stats/#installs
 [license-badge]: https://img.shields.io/badge/license-MIT-blue
 [license-url]: https://github.com/DazzleTools/Windows-No-Internet-Secured-BUGFIX/blob/main/LICENSE
 [discussions-badge]: https://img.shields.io/github/discussions/DazzleTools/Windows-No-Internet-Secured-BUGFIX

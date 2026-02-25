@@ -5,6 +5,30 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.11-alpha] - 2026-02-25
+
+### Added
+- Dev tab: CI audit cards (Raw Clones, CI Checkouts, Organic Clones, Data Freshness)
+- Dev tab: Raw vs Organic dual-line chart visualizing CI noise gap
+- Dev tab: CI Checkout breakdown table with per-workflow detail (last 31 days)
+- Dev tab: Commit activity bar chart (52-week history, client-side from GitHub API)
+- Dev tab: Code frequency chart — weekly additions vs deletions
+- Dev tab: Participation chart — maintainer vs community commits (52 weeks, clickable)
+- Dev tab: Punch card heat map — commits by day-of-week and hour
+- Dev tab: Contributors list with avatars, commit counts
+- Dev tab: Operational status section (data freshness indicator, schedule, retention)
+- Client-side GitHub Statistics API with `sessionStorage` caching and 202-retry logic
+
+### Changed
+- Chart visual hierarchy swapped: unique lines are now solid (primary signal),
+  total/raw lines are dashed (secondary context) across Installs, Views, Overview
+- Tab order: Overview, Installs, Views, Community, Dev
+- Dashboard title: "Project Statistics" (was "Install Statistics")
+- Participation chart labels: "Maintainer" vs "Community" (org-owned repo fix)
+- Referrer table annotates mobile apps and platform variants (e.g., Reddit app)
+- Unique clone/view labels clarified as "tracked" where counts are partial
+- Version bumped from 0.7.10 to 0.7.11
+
 ## [0.7.10-alpha] - 2026-02-25
 
 ### Fixed
