@@ -52,47 +52,57 @@ jobs:
 
             // 3. Accumulate clones (only count new days we haven't seen)
             let newClones = 0;
+            let newUniqueClones = 0;
             let clonesByDate = {};
+            let uniqueClonesByDate = {};
             try {
               const traffic = await github.rest.repos.getClones({ owner, repo, per: "day" });
               const seenSet = new Set(state.lastSeenDates || []);
               for (const day of traffic.data.clones) {
                 if (!seenSet.has(day.timestamp)) {
                   newClones += day.count;
+                  newUniqueClones += day.uniques;
                 }
                 clonesByDate[day.timestamp.slice(0, 10)] = day.count;
+                uniqueClonesByDate[day.timestamp.slice(0, 10)] = day.uniques;
               }
               const allDates = traffic.data.clones.map(d => d.timestamp);
               state.lastSeenDates = allDates.slice(-30);
-              console.log(`Recent clones (14d): ${traffic.data.count}`);
+              console.log(`Recent clones (14d): ${traffic.data.count} (${traffic.data.uniques} unique)`);
             } catch (e) {
               console.log(`Clone accumulation error: ${e.message}`);
             }
 
             state.totalClones = (state.totalClones || 0) + newClones;
+            state.totalUniqueClones = (state.totalUniqueClones || 0) + newUniqueClones;
             state.totalDownloads = totalDownloads;
-            console.log(`Accumulated clones: ${state.totalClones} (+${newClones} new)`);
+            console.log(`Accumulated clones: ${state.totalClones} (+${newClones} new, ${newUniqueClones} unique)`);
 
             // 4. Accumulate views (same 14-day retention as clones)
             let newViews = 0;
+            let newUniqueViews = 0;
             let viewsByDate = {};
+            let uniqueViewsByDate = {};
             try {
               const viewTraffic = await github.rest.repos.getViews({ owner, repo, per: "day" });
               const viewSeenSet = new Set(state.lastSeenViewDates || []);
               for (const day of viewTraffic.data.views) {
                 if (!viewSeenSet.has(day.timestamp)) {
                   newViews += day.count;
+                  newUniqueViews += day.uniques;
                 }
                 viewsByDate[day.timestamp.slice(0, 10)] = day.count;
+                uniqueViewsByDate[day.timestamp.slice(0, 10)] = day.uniques;
               }
               state.lastSeenViewDates = viewTraffic.data.views.map(d => d.timestamp).slice(-30);
-              console.log(`Recent views (14d): ${viewTraffic.data.count}`);
+              console.log(`Recent views (14d): ${viewTraffic.data.count} (${viewTraffic.data.uniques} unique)`);
             } catch (e) {
               console.log(`View accumulation error: ${e.message}`);
             }
 
             state.totalViews = (state.totalViews || 0) + newViews;
-            console.log(`Accumulated views: ${state.totalViews} (+${newViews} new)`);
+            state.totalUniqueViews = (state.totalUniqueViews || 0) + newUniqueViews;
+            console.log(`Accumulated views: ${state.totalViews} (+${newViews} new, ${newUniqueViews} unique)`);
 
             // 5. Repo metadata snapshot (stars, forks, issues)
             try {
@@ -114,6 +124,17 @@ jobs:
               console.log(`Referrers: ${state.referrers.length} sources`);
             } catch (e) {
               console.log(`Referrers error: ${e.message}`);
+            }
+
+            // 6.5. Popular paths snapshot (top 10 pages visited)
+            try {
+              const paths = await github.rest.repos.getTopPaths({ owner, repo });
+              state.popularPaths = paths.data.map(p => ({
+                path: p.path, title: p.title, count: p.count, uniques: p.uniques
+              }));
+              console.log(`Popular paths: ${state.popularPaths.length} paths`);
+            } catch (e) {
+              console.log(`Popular paths error: ${e.message}`);
             }
 
             // 7. Record daily history using API timestamps (not wall clock)
@@ -142,8 +163,14 @@ jobs:
               const entry = existingByDate[dateStr];
               entry.date = dateStr + "T00:00:00Z"; // Normalize timestamp
               entry.capturedAt = capturedAt;
-              if (clonesByDate[dateStr] !== undefined) entry.clones = clonesByDate[dateStr];
-              if (viewsByDate[dateStr] !== undefined) entry.views = viewsByDate[dateStr];
+              if (clonesByDate[dateStr] !== undefined) {
+                entry.clones = clonesByDate[dateStr];
+                entry.uniqueClones = uniqueClonesByDate[dateStr] || 0;
+              }
+              if (viewsByDate[dateStr] !== undefined) {
+                entry.views = viewsByDate[dateStr];
+                entry.uniqueViews = uniqueViewsByDate[dateStr] || 0;
+              }
               entry.stars = state.stars || 0;
               entry.forks = state.forks || 0;
               entry.openIssues = state.openIssues || 0;
@@ -155,8 +182,10 @@ jobs:
                 date: todayStr + "T00:00:00Z",
                 capturedAt: capturedAt,
                 clones: 0,
+                uniqueClones: 0,
                 downloads: 0,
                 views: 0,
+                uniqueViews: 0,
                 total: 0,
                 ciCheckouts: 0,
                 organicClones: 0,
@@ -300,20 +329,24 @@ jobs:
                 repo: `${owner}/${repo}`,
                 period: period,
                 generatedAt: now.toISOString(),
-                version: "0.7.9",
+                version: "0.7.10",
                 cumulativeTotals: {
                   downloads: state.totalDownloads,
                   clones: state.totalClones,
+                  uniqueClones: state.totalUniqueClones || 0,
                   organicClones: archiveOrganicClones,
                   ciCheckouts: state.totalCiCheckouts || 0,
                   views: state.totalViews,
+                  uniqueViews: state.totalUniqueViews || 0,
                   combined: state.totalDownloads + archiveOrganicClones
                 },
                 monthSummary: {
                   downloads: state.dailyHistory.reduce((s, d) => s + (d.downloads || 0), 0),
                   clones: state.dailyHistory.reduce((s, d) => s + (d.clones || 0), 0),
+                  uniqueClones: state.dailyHistory.reduce((s, d) => s + (d.uniqueClones || 0), 0),
                   organicClones: state.dailyHistory.reduce((s, d) => s + (d.organicClones || d.clones || 0), 0),
                   views: state.dailyHistory.reduce((s, d) => s + (d.views || 0), 0),
+                  uniqueViews: state.dailyHistory.reduce((s, d) => s + (d.uniqueViews || 0), 0),
                   combined: state.dailyHistory.reduce((s, d) => s + (d.organicClones || d.clones || 0) + (d.downloads || 0), 0)
                 },
                 dailyHistory: [...state.dailyHistory]

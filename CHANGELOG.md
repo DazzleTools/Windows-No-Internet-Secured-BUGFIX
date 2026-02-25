@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `workflow_run` trigger: Track Downloads & Clones now runs automatically
   after Python Tests completes, capturing accurate CI checkout counts
+- Unique cloners tracking: accumulate daily unique clone counts from
+  Traffic API (`uniqueClones` per day, `totalUniqueClones` cumulative)
+- Unique viewers tracking: accumulate daily unique view counts from
+  Traffic API (`uniqueViews` per day, `totalUniqueViews` cumulative)
+- Popular paths collection: top 10 visited pages from Traffic API
+  stored as `state.popularPaths` for Views tab display
+- Archive includes unique clone and view counts in both cumulative
+  totals and monthly summaries
 
 ## [0.7.9-alpha] - 2026-02-25
 
