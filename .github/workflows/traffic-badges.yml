@@ -228,7 +228,11 @@ jobs:
 
             // Store CI checkout data
             if (!state.ciCheckouts) state.ciCheckouts = {};
+            const previousCiToday = (state.ciCheckouts[todayStr] && state.ciCheckouts[todayStr].total) || 0;
             state.ciCheckouts[todayStr] = { total: ciCheckoutsToday, byWorkflow: ciDetail };
+
+            // Cumulative CI checkout counter (never trimmed, unlike the per-day map)
+            state.totalCiCheckouts = (state.totalCiCheckouts || 0) + (ciCheckoutsToday - previousCiToday);
 
             // Trim ciCheckouts to last 31 days
             const ciDates = Object.keys(state.ciCheckouts).sort();
@@ -254,21 +258,21 @@ jobs:
               }
             }
 
-            // 8. Compute cascading recency suffix (~24h window)
-            // Use last two API clone entries for badge (yesterday full + today partial)
+            // 8. Compute cascading recency suffix (~24h window, organic only)
+            // Use last two API clone entries minus CI checkouts for badge
             const cloneDates = Object.keys(clonesByDate).sort();
             let last24hClones = 0;
-            if (cloneDates.length >= 2) {
-              last24hClones = clonesByDate[cloneDates[cloneDates.length - 1]]
-                            + clonesByDate[cloneDates[cloneDates.length - 2]];
-            } else if (cloneDates.length === 1) {
-              last24hClones = clonesByDate[cloneDates[0]];
+            for (let i = Math.max(0, cloneDates.length - 2); i < cloneDates.length; i++) {
+              const d = cloneDates[i];
+              const raw = clonesByDate[d];
+              const ci = (state.ciCheckouts[d] && state.ciCheckouts[d].total) || 0;
+              last24hClones += Math.max(0, raw - ci);
             }
             const last24h = last24hClones + todayDownloads;
 
             const sumWindow = (n) => {
               const window = state.dailyHistory.slice(-n);
-              return window.reduce((sum, d) => sum + (d.total || 0), 0);
+              return window.reduce((sum, d) => sum + (d.organicClones || d.clones || 0) + (d.downloads || 0), 0);
             };
             const lastWeek = sumWindow(7);
             const lastMonth = sumWindow(31);
@@ -278,7 +282,7 @@ jobs:
             else if (lastWeek > 0) suffix = ` (+${lastWeek} wk)`;
             else if (lastMonth > 0) suffix = ` (+${lastMonth} mo)`;
 
-            console.log(`Recency suffix: "${suffix || "(none)"}" (24h clones: ${last24hClones}, downloads: ${todayDownloads})`);
+            console.log(`Recency suffix: "${suffix || "(none)"}" (24h organic clones: ${last24hClones}, downloads: ${todayDownloads})`);
 
             // 9. Monthly archive (runs on 1st of each month)
             const archiveGistId = process.env.ARCHIVE_GIST_ID;
@@ -288,22 +292,26 @@ jobs:
               prevMonth.setUTCMonth(prevMonth.getUTCMonth() - 1);
               const period = prevMonth.toISOString().slice(0, 7);
 
+              const archiveOrganicClones = Math.max(0, state.totalClones - (state.totalCiCheckouts || 0));
               const archive = {
                 repo: `${owner}/${repo}`,
                 period: period,
                 generatedAt: now.toISOString(),
-                version: "0.8.2",
+                version: "0.7.9",
                 cumulativeTotals: {
                   downloads: state.totalDownloads,
                   clones: state.totalClones,
+                  organicClones: archiveOrganicClones,
+                  ciCheckouts: state.totalCiCheckouts || 0,
                   views: state.totalViews,
-                  combined: state.totalDownloads + state.totalClones
+                  combined: state.totalDownloads + archiveOrganicClones
                 },
                 monthSummary: {
                   downloads: state.dailyHistory.reduce((s, d) => s + (d.downloads || 0), 0),
                   clones: state.dailyHistory.reduce((s, d) => s + (d.clones || 0), 0),
+                  organicClones: state.dailyHistory.reduce((s, d) => s + (d.organicClones || d.clones || 0), 0),
                   views: state.dailyHistory.reduce((s, d) => s + (d.views || 0), 0),
-                  combined: state.dailyHistory.reduce((s, d) => s + (d.total || 0), 0)
+                  combined: state.dailyHistory.reduce((s, d) => s + (d.organicClones || d.clones || 0) + (d.downloads || 0), 0)
                 },
                 dailyHistory: [...state.dailyHistory]
               };
@@ -319,8 +327,9 @@ jobs:
               }
             }
 
-            // 10. Build shields.io endpoint JSON badges
-            const combined = state.totalDownloads + state.totalClones;
+            // 10. Build shields.io endpoint JSON badges (organic clones only)
+            const organicTotalClones = Math.max(0, state.totalClones - (state.totalCiCheckouts || 0));
+            const combined = state.totalDownloads + organicTotalClones;
             const dlsClonesBadge = {
               schemaVersion: 1,
               label: "installs",
@@ -338,7 +347,7 @@ jobs:
             const clonesBadge = {
               schemaVersion: 1,
               label: "clones",
-              message: `${state.totalClones}`,
+              message: `${organicTotalClones}`,
               color: "blue"
             };
 

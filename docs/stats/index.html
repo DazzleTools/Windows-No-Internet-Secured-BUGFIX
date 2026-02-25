@@ -685,7 +685,13 @@
 
         function sumWindow(history, n, field) {
             var w = history.slice(-n);
-            return w.reduce(function(sum, d) { return sum + (d[field || 'total'] || 0); }, 0);
+            if (field) {
+                return w.reduce(function(sum, d) { return sum + (d[field] || 0); }, 0);
+            }
+            // Default: organic installs (organicClones + downloads)
+            return w.reduce(function(sum, d) {
+                return sum + (d.organicClones !== undefined ? d.organicClones : (d.clones || 0)) + (d.downloads || 0);
+            }, 0);
         }
 
         // Detect trailing zeros and replace with last real value for projection.
@@ -800,7 +806,7 @@
 
         function renderInstallsTab(state) {
             var totalDl = state.totalDownloads || 0;
-            var totalCl = state.totalClones || 0;
+            var totalCl = Math.max(0, (state.totalClones || 0) - (state.totalCiCheckouts || 0));
             var combined = totalDl + totalCl;
 
             setText('total-installs', fmt(combined));
@@ -812,9 +818,10 @@
             setText('downloads-pct', dlPct + '% of total');
             setText('clones-pct', clPct + '% of total');
 
-            // Recent activity (cascading)
+            // Recent activity (cascading, organic only)
             var history = state.dailyHistory || [];
-            var last24h = history.length > 0 ? (history[history.length - 1].total || 0) : 0;
+            var lastEntry = history.length > 0 ? history[history.length - 1] : {};
+            var last24h = (lastEntry.organicClones !== undefined ? lastEntry.organicClones : (lastEntry.clones || 0)) + (lastEntry.downloads || 0);
             var lastWeek = sumWindow(history, 7);
             var lastMonth = sumWindow(history, 31);
 
@@ -864,7 +871,7 @@
 
             var labels = history.map(function(d) { return formatDate(d.date); });
             var totals = history.map(function(d) { return d.total || 0; });
-            var clones = history.map(function(d) { return d.clones || 0; });
+            var clones = history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); });
             var downloads = history.map(function(d) { return d.downloads || 0; });
 
             // Check if any line matches the total exactly at every point
@@ -1425,8 +1432,8 @@
             if (history.length === 0) return;
             if (typeof Chart === 'undefined') return;
 
-            // Update summary cards
-            var combined = (state.totalDownloads || 0) + (state.totalClones || 0);
+            // Update summary cards (organic clones only)
+            var combined = (state.totalDownloads || 0) + Math.max(0, (state.totalClones || 0) - (state.totalCiCheckouts || 0));
             setText('ov-installs', fmt(combined));
             setText('ov-views', fmt(state.totalViews || 0));
             setText('ov-stars', fmt(state.stars || 0));
@@ -1478,7 +1485,7 @@
             if (showClones) {
                 datasets.push({
                     label: 'Clones',
-                    data: history.map(function(d) { return d.clones || 0; }),
+                    data: history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); }),
                     borderColor: '#bc8cff',
                     backgroundColor: 'transparent',
                     fill: false,

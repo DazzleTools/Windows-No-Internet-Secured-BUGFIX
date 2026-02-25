@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Badge recency suffix uses ~24h window (yesterday + today partial)
   instead of only the last entry, which could misattribute data
 - todayViews had same mislabeling bug as todayClones — both now fixed
+- All user-facing numbers (badge, dashboard cards, charts, suffix) now
+  show organic clones only, excluding CI/CD checkout noise
 
 ### Added
 - CI clone detection: counts `actions/checkout` operations per workflow
@@ -24,9 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "nothing happened" from "script didn't run"
 - `state.ciCheckouts` map with per-workflow breakdown and per-run arrays
   to detect matrix changes
+- `state.totalCiCheckouts` cumulative counter (never trimmed) for
+  accurate lifetime organic clone calculation
+- Monthly archive includes both raw and organic clone fields
 
 ### Changed
 - Dates normalized to `YYYY-MM-DDT00:00:00Z` format in dedup step
+- Dashboard and badge show organic clones as primary metric; raw clones
+  retained in gist state as secondary diagnostic data
 
 ## [0.7.8-alpha] - 2026-02-24
 
