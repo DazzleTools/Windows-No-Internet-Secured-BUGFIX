@@ -130,7 +130,9 @@ jobs:
             try {
               const paths = await github.rest.repos.getTopPaths({ owner, repo });
               state.popularPaths = paths.data.map(p => ({
-                path: p.path, title: p.title, count: p.count, uniques: p.uniques
+                path: p.path,
+                title: (p.title || '').replace(/\u00c3\u201a\u00c2\u00b7/g, ' \u00b7 ').replace(/\u00c2\u00b7/g, '\u00b7'),
+                count: p.count, uniques: p.uniques
               }));
               console.log(`Popular paths: ${state.popularPaths.length} paths`);
             } catch (e) {
@@ -150,6 +152,8 @@ jobs:
             }
 
             // Update or create entries for each day the Traffic API reports
+            // Merge strategy: always improve, never erase. Traffic counts can
+            // only increase within a day, so use Math.max for monotonic fields.
             const allApiDates = new Set([
               ...Object.keys(clonesByDate),
               ...Object.keys(viewsByDate)
@@ -164,28 +168,43 @@ jobs:
               entry.date = dateStr + "T00:00:00Z"; // Normalize timestamp
               entry.capturedAt = capturedAt;
               if (clonesByDate[dateStr] !== undefined) {
-                entry.clones = clonesByDate[dateStr];
-                entry.uniqueClones = uniqueClonesByDate[dateStr] || 0;
+                entry.clones = Math.max(entry.clones || 0, clonesByDate[dateStr]);
+                // Only write uniqueClones when API reports a positive value.
+                // API returns 0 for expired unique data — don't overwrite
+                // real data with false zeros or create zeros from nothing.
+                const apiUniqueClones = uniqueClonesByDate[dateStr] || 0;
+                if (apiUniqueClones > 0) {
+                  entry.uniqueClones = Math.max(entry.uniqueClones || 0, apiUniqueClones);
+                }
               }
               if (viewsByDate[dateStr] !== undefined) {
-                entry.views = viewsByDate[dateStr];
-                entry.uniqueViews = uniqueViewsByDate[dateStr] || 0;
+                entry.views = Math.max(entry.views || 0, viewsByDate[dateStr]);
+                const apiUniqueViews = uniqueViewsByDate[dateStr] || 0;
+                if (apiUniqueViews > 0) {
+                  entry.uniqueViews = Math.max(entry.uniqueViews || 0, apiUniqueViews);
+                }
               }
-              entry.stars = state.stars || 0;
-              entry.forks = state.forks || 0;
-              entry.openIssues = state.openIssues || 0;
+              // Only set stars/forks/openIssues for today — these are
+              // point-in-time snapshots, not historical values. Writing
+              // today's count onto past entries overwrites their real values.
+              if (dateStr === todayStr) {
+                entry.stars = state.stars || 0;
+                entry.forks = state.forks || 0;
+                entry.openIssues = state.openIssues || 0;
+              }
             }
 
-            // Always create today's entry (even with zeros) to prove the script ran
+            // Always ensure today's entry exists to prove the script ran.
+            // Don't set uniqueClones/uniqueViews to 0 — leave undefined so
+            // the dashboard shows a gap rather than a false zero. These fields
+            // get filled when the Traffic API catches up (next run).
             if (!existingByDate[todayStr]) {
               const todayEntry = {
                 date: todayStr + "T00:00:00Z",
                 capturedAt: capturedAt,
                 clones: 0,
-                uniqueClones: 0,
                 downloads: 0,
                 views: 0,
-                uniqueViews: 0,
                 total: 0,
                 ciCheckouts: 0,
                 organicClones: 0,
@@ -195,6 +214,14 @@ jobs:
               };
               state.dailyHistory.push(todayEntry);
               existingByDate[todayStr] = todayEntry;
+            } else {
+              // Backfill metadata on existing entry (may have been created
+              // by an older workflow version missing these fields)
+              const today = existingByDate[todayStr];
+              today.capturedAt = capturedAt;
+              today.stars = state.stars || 0;
+              today.forks = state.forks || 0;
+              today.openIssues = state.openIssues || 0;
             }
 
             // Apply downloads to today's entry
@@ -258,10 +285,16 @@ jobs:
               console.log(`CI checkout counting error: ${e.message}`);
             }
 
+            // Count distinct CI runs that performed at least one checkout
+            let ciRunsWithCheckouts = 0;
+            for (const wf of Object.values(ciDetail)) {
+              ciRunsWithCheckouts += wf.checkoutsPerRun.filter(c => c > 0).length;
+            }
+
             // Store CI checkout data
             if (!state.ciCheckouts) state.ciCheckouts = {};
             const previousCiToday = (state.ciCheckouts[todayStr] && state.ciCheckouts[todayStr].total) || 0;
-            state.ciCheckouts[todayStr] = { total: ciCheckoutsToday, byWorkflow: ciDetail };
+            state.ciCheckouts[todayStr] = { total: ciCheckoutsToday, runs: ciRunsWithCheckouts, byWorkflow: ciDetail };
 
             // Cumulative CI checkout counter (never trimmed, unlike the per-day map)
             state.totalCiCheckouts = (state.totalCiCheckouts || 0) + (ciCheckoutsToday - previousCiToday);
@@ -276,6 +309,7 @@ jobs:
 
             // Apply CI checkouts to today's dailyHistory entry
             todayEntry.ciCheckouts = ciCheckoutsToday;
+            todayEntry.ciRuns = ciRunsWithCheckouts;
             todayEntry.organicClones = Math.max(0, (todayEntry.clones || 0) - ciCheckoutsToday);
 
             // Also backfill ciCheckouts for other days in dailyHistory from stored data
@@ -283,22 +317,52 @@ jobs:
               const dKey = entry.date.slice(0, 10);
               if (state.ciCheckouts[dKey]) {
                 entry.ciCheckouts = state.ciCheckouts[dKey].total;
+                entry.ciRuns = state.ciCheckouts[dKey].runs || 0;
                 entry.organicClones = Math.max(0, (entry.clones || 0) - entry.ciCheckouts);
               } else if (entry.ciCheckouts === undefined) {
                 entry.ciCheckouts = 0;
+                entry.ciRuns = 0;
                 entry.organicClones = entry.clones || 0;
               }
             }
 
-            // 8. Compute cascading recency suffix (~24h window, organic only)
-            // Use last two API clone entries minus CI checkouts for badge
-            const cloneDates = Object.keys(clonesByDate).sort();
+            // Compute organicUniqueClones for all daily entries
+            // Formula: organicUnique = unique - MIN(round(unique * ciRate), ciRuns)
+            // Skip entries without uniqueClones — don't create false zeros
+            for (const entry of state.dailyHistory) {
+              if (entry.uniqueClones == null) continue;
+              const rawUnique = entry.uniqueClones;
+              const ciRate = (entry.clones || 0) > 0 ? entry.ciCheckouts / entry.clones : 0;
+              const ciUniqueByPct = Math.round(rawUnique * ciRate);
+              const ciUniqueCeiling = entry.ciRuns || 0;
+              const ciUniqueClones = Math.min(ciUniqueByPct, ciUniqueCeiling);
+              entry.organicUniqueClones = Math.max(0, rawUnique - ciUniqueClones);
+            }
+
+            // Accumulate totalOrganicUniqueClones
+            // Uses same delta approach as totalUniqueClones: track CI unique adjustment for today,
+            // then subtract cumulative CI uniques from cumulative raw uniques
+            const todayCiUnique = (todayEntry.uniqueClones || 0) - (todayEntry.organicUniqueClones || 0);
+            const previousCiUniqueToday = state._previousCiUniqueToday || 0;
+            state.totalCiUniqueClones = (state.totalCiUniqueClones || 0) + (todayCiUnique - previousCiUniqueToday);
+            state._previousCiUniqueToday = todayCiUnique;
+            state.totalOrganicUniqueClones = Math.max(0,
+              (state.totalUniqueClones || 0) - (state.totalCiUniqueClones || 0)
+            );
+            console.log(`Organic unique clones: today=${todayEntry.organicUniqueClones}, total=${state.totalOrganicUniqueClones} (raw ${state.totalUniqueClones} - CI ${state.totalCiUniqueClones})`);
+
+            // 8. Compute cascading recency suffix (organic only)
+            // Use yesterday's complete 24h clone data for the "24h" badge.
+            // Yesterday is always a full day regardless of when the workflow
+            // runs (3am cron vs commit trigger), so the label is accurate.
+            const yesterday = new Date();
+            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+            const yesterdayStr = yesterday.toISOString().slice(0, 10);
             let last24hClones = 0;
-            for (let i = Math.max(0, cloneDates.length - 2); i < cloneDates.length; i++) {
-              const d = cloneDates[i];
-              const raw = clonesByDate[d];
-              const ci = (state.ciCheckouts[d] && state.ciCheckouts[d].total) || 0;
-              last24hClones += Math.max(0, raw - ci);
+            if (clonesByDate[yesterdayStr] !== undefined) {
+              const raw = clonesByDate[yesterdayStr];
+              const ci = (state.ciCheckouts[yesterdayStr] && state.ciCheckouts[yesterdayStr].total) || 0;
+              last24hClones = Math.max(0, raw - ci);
             }
             const last24h = last24hClones + todayDownloads;
 
@@ -329,12 +393,13 @@ jobs:
                 repo: `${owner}/${repo}`,
                 period: period,
                 generatedAt: now.toISOString(),
-                version: "0.7.10",
+                version: "0.7.12",
                 cumulativeTotals: {
                   downloads: state.totalDownloads,
                   clones: state.totalClones,
                   uniqueClones: state.totalUniqueClones || 0,
                   organicClones: archiveOrganicClones,
+                  organicUniqueClones: state.totalOrganicUniqueClones || 0,
                   ciCheckouts: state.totalCiCheckouts || 0,
                   views: state.totalViews,
                   uniqueViews: state.totalUniqueViews || 0,
@@ -345,6 +410,7 @@ jobs:
                   clones: state.dailyHistory.reduce((s, d) => s + (d.clones || 0), 0),
                   uniqueClones: state.dailyHistory.reduce((s, d) => s + (d.uniqueClones || 0), 0),
                   organicClones: state.dailyHistory.reduce((s, d) => s + (d.organicClones || d.clones || 0), 0),
+                  organicUniqueClones: state.dailyHistory.reduce((s, d) => s + (d.organicUniqueClones || d.uniqueClones || 0), 0),
                   views: state.dailyHistory.reduce((s, d) => s + (d.views || 0), 0),
                   uniqueViews: state.dailyHistory.reduce((s, d) => s + (d.uniqueViews || 0), 0),
                   combined: state.dailyHistory.reduce((s, d) => s + (d.organicClones || d.clones || 0) + (d.downloads || 0), 0)

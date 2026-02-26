@@ -786,6 +786,15 @@
                     <div class="chart-container">
                         <canvas id="devChart"></canvas>
                     </div>
+                    <details class="chart-key" style="margin-top: 0.5rem; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.6;">
+                        <summary style="cursor: pointer; color: var(--text-secondary); font-size: 0.8rem;">Terminology guide</summary>
+                        <div style="margin-top: 0.4rem; padding: 0.6rem 0.8rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-tertiary);">
+                            <p style="margin: 0 0 0.4rem;"><strong style="color: var(--accent-orange);">Raw Clones</strong> &mdash; Total git clones reported by the GitHub Traffic API. Includes CI/CD automation, bots, and real users.</p>
+                            <p style="margin: 0 0 0.4rem;"><strong style="color: var(--accent-green);">Organic Clones</strong> &mdash; Raw clones minus detected CI checkout operations. Represents actual user activity. <em>Formula: raw &minus; ciCheckouts</em></p>
+                            <p style="margin: 0 0 0.4rem;"><strong style="color: var(--accent-purple-light);">Raw Unique Clones</strong> <span style="opacity:0.7">(dashed)</span> &mdash; Distinct IPs/identities that cloned, as reported by GitHub. Includes both CI runners and real users.</p>
+                            <p style="margin: 0;"><strong style="color: var(--accent-purple-light);">Organic Unique Clones</strong> <span style="opacity:0.7">(solid)</span> &mdash; Estimated real unique cloners after removing CI. <em>Formula: raw unique &minus; MIN(round(rawUnique &times; ciRate), ciRuns)</em>. The MIN ensures CI never contributes more unique clones than distinct workflow runs.</p>
+                        </div>
+                    </details>
                 </section>
 
                 <!-- CI Breakdown Table -->
@@ -937,44 +946,82 @@
             }, 0);
         }
 
-        // Project today's incomplete zero from yesterday's confirmed value.
-        // Past days with 0 are real data (validated by the 3AM UTC recheck).
-        // Only today's 0 is uncertain — the day hasn't finished yet.
-        // Returns { data: [...], projectedFrom: index } where projectedFrom is
-        // the first projected index. If no projection, projectedFrom === data.length.
-        function projectTrailingZeros(values, dates) {
-            if (!dates || values.length < 2) {
-                return { data: values, projectedFrom: values.length };
-            }
-
-            var lastIdx = values.length - 1;
-            var today = new Date().toISOString().slice(0, 10);
-            var lastDate = (dates[lastIdx] || '').slice(0, 10);
-
-            // Only project if the last entry is today AND its value is 0
-            if (values[lastIdx] !== 0 || lastDate !== today) {
-                return { data: values, projectedFrom: values.length };
-            }
-
-            // Today's 0 → project from yesterday's confirmed value
-            var result = values.slice();
-            result[lastIdx] = result[lastIdx - 1];
-
-            // If yesterday was also 0, no visual change — no projection indicator needed
-            if (result[lastIdx] === 0) {
-                return { data: result, projectedFrom: values.length };
-            }
-
-            return { data: result, projectedFrom: lastIdx };
+        // Compute organic unique clones for a daily entry client-side.
+        // Uses MIN(percentage estimate, ciRuns ceiling) formula.
+        // Returns null if uniqueClones data is absent (expired API window).
+        // Returns the pre-computed value if available, otherwise calculates it.
+        function getOrganicUniqueClones(entry) {
+            if (entry.organicUniqueClones !== undefined) return entry.organicUniqueClones;
+            if (entry.uniqueClones === undefined || entry.uniqueClones === null) return null;
+            var rawUnique = entry.uniqueClones;
+            var ciRate = (entry.clones || 0) > 0 ? entry.ciCheckouts / entry.clones : 0;
+            var ciUniqueByPct = Math.round(rawUnique * ciRate);
+            var ciUniqueCeiling = entry.ciRuns || 0;
+            var ciUniqueClones = Math.min(ciUniqueByPct, ciUniqueCeiling);
+            return Math.max(0, rawUnique - ciUniqueClones);
         }
 
-        // Build Chart.js segment config for dashed projection from a given index.
-        // The dashed segment starts from the last real point to the first projected point.
-        function projectionSegmentConfig(projectedFrom, dataLength) {
-            if (projectedFrom >= dataLength) return {};
+        // Project missing data at both ends of a series:
+        // - Trailing: today's incomplete zero → project from yesterday's confirmed value
+        // - Leading: null values at start → project from first real value (expired API data)
+        // Past days with 0 are real data (validated by the 3AM UTC recheck).
+        // Returns { data: [...], projectedFrom: index, projectedTo: index }
+        //   projectedFrom: first trailing projected index (dataLength if none)
+        //   projectedTo: last leading projected index + 1 (0 if none)
+        function projectTrailingZeros(values, dates) {
+            if (!dates || values.length < 2) {
+                return { data: values, projectedFrom: values.length, projectedTo: 0 };
+            }
+
+            var result = values.slice();
+            var projectedTo = 0;
+
+            // Leading nulls: find first real (non-null) value and backfill
+            var firstRealIdx = -1;
+            for (var i = 0; i < result.length; i++) {
+                if (result[i] !== null && result[i] !== undefined) {
+                    firstRealIdx = i;
+                    break;
+                }
+            }
+            if (firstRealIdx > 0) {
+                for (var i = 0; i < firstRealIdx; i++) {
+                    result[i] = result[firstRealIdx];
+                }
+                projectedTo = firstRealIdx;
+            }
+
+            // Trailing zeros: only project if the last entry is today AND its value is 0
+            var lastIdx = result.length - 1;
+            var today = new Date().toISOString().slice(0, 10);
+            var lastDate = (dates[lastIdx] || '').slice(0, 10);
+            var projectedFrom = result.length;
+
+            if ((result[lastIdx] === 0 || result[lastIdx] === null) && lastDate === today) {
+                result[lastIdx] = result[lastIdx - 1];
+                if (result[lastIdx] !== 0 && result[lastIdx] !== null) {
+                    projectedFrom = lastIdx;
+                }
+            }
+
+            return { data: result, projectedFrom: projectedFrom, projectedTo: projectedTo };
+        }
+
+        // Build Chart.js segment config for dashed projection at both ends.
+        // Leading projection: segments before projectedTo are dashed.
+        // Trailing projection: segments from projectedFrom onward are dashed.
+        function projectionSegmentConfig(projectedFrom, dataLength, projectedTo) {
+            var hasTrailing = projectedFrom < dataLength;
+            var hasLeading = (projectedTo || 0) > 0;
+            if (!hasTrailing && !hasLeading) return {};
+            var leadEnd = projectedTo || 0;
             return {
                 borderDash: function(ctx) {
-                    return ctx.p0DataIndex >= projectedFrom - 1 ? [6, 3] : undefined;
+                    // Leading projection: dash segments before first real data
+                    if (hasLeading && ctx.p0DataIndex < leadEnd) return [6, 3];
+                    // Trailing projection: dash segments from last real to projected
+                    if (hasTrailing && ctx.p0DataIndex >= projectedFrom - 1) return [6, 3];
+                    return undefined;
                 }
             };
         }
@@ -1077,7 +1124,7 @@
             var clPct = combined > 0 ? ((totalCl / combined) * 100).toFixed(1) : '0';
             setText('downloads-pct', dlPct + '% of total');
             setText('clones-pct', clPct + '% of total');
-            setText('clones-unique', fmt(state.totalUniqueClones || 0) + ' tracked unique');
+            setText('clones-unique', fmt(state.totalOrganicUniqueClones || state.totalUniqueClones || 0) + ' tracked unique');
 
             // Recent activity (cascading, organic only)
             var history = state.dailyHistory || [];
@@ -1133,13 +1180,14 @@
             var labels = history.map(function(d) { return formatDate(d.date); });
             var dates = history.map(function(d) { return d.date; });
             var clonesProj = projectTrailingZeros(history.map(function(d) { return d.organicClones !== undefined ? d.organicClones : (d.clones || 0); }), dates);
-            var uniqueClonesProj = projectTrailingZeros(history.map(function(d) { return d.uniqueClones || 0; }), dates);
+            var uniqueClonesProj = projectTrailingZeros(history.map(function(d) { return getOrganicUniqueClones(d); }), dates);
             var downloadsProj = projectTrailingZeros(history.map(function(d) { return d.downloads || 0; }), dates);
             var clones = clonesProj.data;
             var uniqueClones = uniqueClonesProj.data;
             var downloads = downloadsProj.data;
             var totals = clones.map(function(c, i) { return c + downloads[i]; });
             var projectedFrom = Math.min(clonesProj.projectedFrom, downloadsProj.projectedFrom);
+            var projectedTo = Math.max(clonesProj.projectedTo, downloadsProj.projectedTo);
 
             // Check if any line matches the total exactly at every point
             // If so, render total as area-only (no top line) so the matching line stays visible
@@ -1168,7 +1216,7 @@
                             pointRadius: totalBorderWidth > 0 ? pointSize : 0,
                             pointHoverRadius: totalBorderWidth > 0 ? pointSize + 2 : 0,
                             borderWidth: totalBorderWidth,
-                            segment: projectionSegmentConfig(projectedFrom, totals.length),
+                            segment: projectionSegmentConfig(projectedFrom, totals.length, projectedTo),
                             order: 2  // render behind lines
                         },
                         {
@@ -1182,7 +1230,7 @@
                             pointHoverRadius: 3,
                             borderWidth: 1.5,
                             borderDash: [4, 2],
-                            segment: projectionSegmentConfig(clonesProj.projectedFrom, clones.length),
+                            segment: projectionSegmentConfig(clonesProj.projectedFrom, clones.length, clonesProj.projectedTo),
                             order: 1
                         },
                         {
@@ -1195,7 +1243,7 @@
                             pointRadius: smallPoint,
                             pointHoverRadius: smallPoint + 2,
                             borderWidth: 2,
-                            segment: projectionSegmentConfig(uniqueClonesProj.projectedFrom, uniqueClones.length),
+                            segment: projectionSegmentConfig(uniqueClonesProj.projectedFrom, uniqueClones.length, uniqueClonesProj.projectedTo),
                             order: 1
                         },
                         {
@@ -1208,7 +1256,7 @@
                             pointRadius: smallPoint,
                             pointHoverRadius: smallPoint + 2,
                             borderWidth: 2,
-                            segment: projectionSegmentConfig(downloadsProj.projectedFrom, downloads.length),
+                            segment: projectionSegmentConfig(downloadsProj.projectedFrom, downloads.length, downloadsProj.projectedTo),
                             order: 1
                         }
                     ]
@@ -1393,7 +1441,7 @@
             var labels = history.map(function(d) { return formatDate(d.date); });
             var dates = history.map(function(d) { return d.date; });
             var viewsRaw = history.map(function(d) { return d.views || 0; });
-            var uniqueViewsRaw = history.map(function(d) { return d.uniqueViews || 0; });
+            var uniqueViewsRaw = history.map(function(d) { return d.uniqueViews !== undefined ? d.uniqueViews : null; });
             var proj = projectTrailingZeros(viewsRaw, dates);
             var uniqueProj = projectTrailingZeros(uniqueViewsRaw, dates);
             var hasProjection = proj.projectedFrom < proj.data.length;
@@ -1416,9 +1464,7 @@
                 borderDash: [4, 2]
             };
 
-            if (hasProjection) {
-                dataset.segment = projectionSegmentConfig(proj.projectedFrom, proj.data.length);
-            }
+            dataset.segment = projectionSegmentConfig(proj.projectedFrom, proj.data.length, proj.projectedTo);
 
             var uniqueDataset = {
                 label: 'Unique Views',
@@ -1435,7 +1481,7 @@
                 },
                 pointHoverRadius: 5,
                 borderWidth: 2,
-                segment: projectionSegmentConfig(uniqueProj.projectedFrom, uniqueProj.data.length),
+                segment: projectionSegmentConfig(uniqueProj.projectedFrom, uniqueProj.data.length, uniqueProj.projectedTo),
                 order: 1
             };
 
@@ -1526,8 +1572,9 @@
 
                 // Use API title as label (cleaned), fall back to path-derived name
                 var title = (p.title || '')
-                    .replace(/\u00c2\u00b7/g, '\u00b7')  // Fix double-encoded middot
-                    .replace(/\s*\u00b7\s*/g, ' - ')      // Replace middot separators with dash
+                    .replace(/\u00c3\u201a\u00c2\u00b7/g, ' - ')  // Fix triple-encoded middot (Ã‚·)
+                    .replace(/\u00c2\u00b7/g, '\u00b7')            // Fix double-encoded middot (Â·)
+                    .replace(/\s*\u00b7\s*/g, ' - ')               // Replace middot separators with dash
                     .replace(/\.\.\.$/, '')                 // Strip trailing ellipsis
                     .trim();
 
@@ -1839,7 +1886,7 @@
             var combined = (state.totalDownloads || 0) + Math.max(0, (state.totalClones || 0) - (state.totalCiCheckouts || 0));
             setText('ov-installs', fmt(combined));
             setText('ov-views', fmt(state.totalViews || 0));
-            setText('ov-installs-unique', fmt(state.totalUniqueClones || 0) + ' tracked unique cloners');
+            setText('ov-installs-unique', fmt(state.totalOrganicUniqueClones || state.totalUniqueClones || 0) + ' tracked unique cloners');
             setText('ov-views-unique', fmt(state.totalUniqueViews || 0) + ' unique viewers');
             setText('ov-stars', fmt(state.stars || 0));
             setText('ov-forks', fmt(state.forks || 0));
@@ -1866,6 +1913,7 @@
                     tension: 0.3,
                     pointRadius: 0,
                     borderWidth: 0,
+                    segment: projectionSegmentConfig(installsProj.projectedFrom, installsProj.data.length, installsProj.projectedTo),
                     order: 3
                 });
             }
@@ -1886,9 +1934,7 @@
                     borderDash: [4, 2],
                     order: 1
                 };
-                if (viewsProj.projectedFrom < viewsProj.data.length) {
-                    viewsDs.segment = projectionSegmentConfig(viewsProj.projectedFrom, viewsProj.data.length);
-                }
+                viewsDs.segment = projectionSegmentConfig(viewsProj.projectedFrom, viewsProj.data.length, viewsProj.projectedTo);
                 datasets.push(viewsDs);
             }
 
@@ -1906,7 +1952,7 @@
                     pointHoverRadius: 3,
                     borderWidth: 1.5,
                     borderDash: [4, 2],
-                    segment: projectionSegmentConfig(clonesProj.projectedFrom, clonesProj.data.length),
+                    segment: projectionSegmentConfig(clonesProj.projectedFrom, clonesProj.data.length, clonesProj.projectedTo),
                     order: 1
                 };
                 datasets.push(clonesDs);
@@ -1925,14 +1971,14 @@
                     pointRadius: 2,
                     pointHoverRadius: 4,
                     borderWidth: 2,
-                    segment: projectionSegmentConfig(downloadsProj.projectedFrom, downloadsProj.data.length),
+                    segment: projectionSegmentConfig(downloadsProj.projectedFrom, downloadsProj.data.length, downloadsProj.projectedTo),
                     order: 1
                 };
                 datasets.push(downloadsDs);
             }
 
             if (showUniqueClones) {
-                var uClonesRaw = history.map(function(d) { return d.uniqueClones || 0; });
+                var uClonesRaw = history.map(function(d) { return getOrganicUniqueClones(d); });
                 var uClonesProj = projectTrailingZeros(uClonesRaw, dates);
                 datasets.push({
                     label: 'Unique Clones',
@@ -1944,13 +1990,13 @@
                     pointRadius: 2,
                     pointHoverRadius: 4,
                     borderWidth: 2,
-                    segment: projectionSegmentConfig(uClonesProj.projectedFrom, uClonesProj.data.length),
+                    segment: projectionSegmentConfig(uClonesProj.projectedFrom, uClonesProj.data.length, uClonesProj.projectedTo),
                     order: 1
                 });
             }
 
             if (showUniqueViews) {
-                var uViewsRaw = history.map(function(d) { return d.uniqueViews || 0; });
+                var uViewsRaw = history.map(function(d) { return d.uniqueViews !== undefined ? d.uniqueViews : null; });
                 var uViewsProj = projectTrailingZeros(uViewsRaw, dates);
                 datasets.push({
                     label: 'Unique Views',
@@ -1962,7 +2008,7 @@
                     pointRadius: 2,
                     pointHoverRadius: 4,
                     borderWidth: 2,
-                    segment: projectionSegmentConfig(uViewsProj.projectedFrom, uViewsProj.data.length),
+                    segment: projectionSegmentConfig(uViewsProj.projectedFrom, uViewsProj.data.length, uViewsProj.projectedTo),
                     order: 1
                 });
             }
@@ -2052,11 +2098,13 @@
             var organicLine = history.map(function(d) {
                 return d.organicClones !== undefined ? d.organicClones : (d.clones || 0);
             });
-            var uniqueLine = history.map(function(d) { return d.uniqueClones || 0; });
+            var rawUniqueLine = history.map(function(d) { return d.uniqueClones !== undefined ? d.uniqueClones : null; });
+            var organicUniqueLine = history.map(function(d) { return getOrganicUniqueClones(d); });
 
             var rawProj = projectTrailingZeros(rawLine, dates);
             var organicProj = projectTrailingZeros(organicLine, dates);
-            var uniqueProj = projectTrailingZeros(uniqueLine, dates);
+            var rawUniqueProj = projectTrailingZeros(rawUniqueLine, dates);
+            var organicUniqueProj = projectTrailingZeros(organicUniqueLine, dates);
 
             destroyChart('devChart');
             var ctx = document.getElementById('devChart').getContext('2d');
@@ -2076,8 +2124,8 @@
                             pointRadius: 2,
                             pointHoverRadius: 4,
                             borderWidth: 2,
-                            segment: projectionSegmentConfig(rawProj.projectedFrom, rawProj.data.length),
-                            order: 3
+                            segment: projectionSegmentConfig(rawProj.projectedFrom, rawProj.data.length, rawProj.projectedTo),
+                            order: 4
                         },
                         {
                             label: 'Organic Clones',
@@ -2089,12 +2137,26 @@
                             pointRadius: 2,
                             pointHoverRadius: 4,
                             borderWidth: 2,
-                            segment: projectionSegmentConfig(organicProj.projectedFrom, organicProj.data.length),
+                            segment: projectionSegmentConfig(organicProj.projectedFrom, organicProj.data.length, organicProj.projectedTo),
+                            order: 3
+                        },
+                        {
+                            label: 'Raw Unique Clones',
+                            data: rawUniqueProj.data,
+                            borderColor: '#d4b8ff',
+                            backgroundColor: 'transparent',
+                            fill: false,
+                            tension: 0.3,
+                            pointRadius: 1,
+                            pointHoverRadius: 3,
+                            borderWidth: 1.5,
+                            borderDash: [4, 2],
+                            segment: projectionSegmentConfig(rawUniqueProj.projectedFrom, rawUniqueProj.data.length, rawUniqueProj.projectedTo),
                             order: 2
                         },
                         {
-                            label: 'Unique Clones',
-                            data: uniqueProj.data,
+                            label: 'Organic Unique Clones',
+                            data: organicUniqueProj.data,
                             borderColor: '#d4b8ff',
                             backgroundColor: 'transparent',
                             fill: false,
@@ -2102,7 +2164,7 @@
                             pointRadius: 2,
                             pointHoverRadius: 4,
                             borderWidth: 2,
-                            segment: projectionSegmentConfig(uniqueProj.projectedFrom, uniqueProj.data.length),
+                            segment: projectionSegmentConfig(organicUniqueProj.projectedFrom, organicUniqueProj.data.length, organicUniqueProj.projectedTo),
                             order: 1
                         }
                     ]
@@ -2259,6 +2321,11 @@
             if (typeof Chart === 'undefined' || !data || data.length === 0) return;
 
             // data = array of { total, week (unix timestamp), days: [Sun..Sat] }
+            // Trim weeks that predate repo creation (API always returns 52 weeks)
+            var createdTs = new Date(REPO_CREATED + 'T00:00:00Z').getTime() / 1000;
+            data = data.filter(function(w) { return w.week >= createdTs; });
+            if (data.length === 0) return;
+
             commitWeeks = data.map(function(w) { return w.week; });
             var labels = data.map(function(w) {
                 var d = new Date(w.week * 1000);
@@ -2412,10 +2479,28 @@
             var now = new Date();
             var utcDay = now.getUTCDay(); // 0=Sunday
             var currentSunday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - utcDay));
+            var createdMs = new Date(REPO_CREATED + 'T00:00:00Z').getTime();
+
+            // Build all week dates first, then trim pre-creation weeks
+            var allWeekDates = [];
             for (var i = 0; i < allCommits.length; i++) {
-                var weekDate = new Date(currentSunday.getTime() - ((allCommits.length - 1 - i) * 7 * 24 * 60 * 60 * 1000));
-                labels.push(weekDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }));
-                participationWeekDates.push(weekDate);
+                allWeekDates.push(new Date(currentSunday.getTime() - ((allCommits.length - 1 - i) * 7 * 24 * 60 * 60 * 1000)));
+            }
+
+            // Find first week at or after repo creation
+            var startIdx = 0;
+            for (var i = 0; i < allWeekDates.length; i++) {
+                if (allWeekDates[i].getTime() >= createdMs) { startIdx = i; break; }
+            }
+
+            // Trim arrays to post-creation range
+            allCommits = allCommits.slice(startIdx);
+            ownerCommits = ownerCommits.slice(startIdx);
+            communityCommits = communityCommits.slice(startIdx);
+
+            for (var i = startIdx; i < allWeekDates.length; i++) {
+                labels.push(allWeekDates[i].toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }));
+                participationWeekDates.push(allWeekDates[i]);
             }
 
             destroyChart('participationChart');
