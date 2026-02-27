@@ -5,6 +5,46 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.12-alpha] - 2026-02-27
+
+### Changed
+- **Schema versioning**: Gist state now carries `schemaVersion` (currently 3)
+  with forward-only migration steps run on each workflow execution
+- **Delta-based dedup**: Clone and view accumulation replaced boolean
+  `lastSeenDates` sets with `lastSeenCloneCounts` / `lastSeenViewCounts`
+  maps — tracks last-known count per date so only the increase (delta)
+  is accumulated, fixing missed traffic on zero-count days that later
+  gain activity
+- **`totalOrganicClones`**: Accumulated per-day organic clones instead of
+  global `totalClones - totalCiCheckouts` subtraction, which could
+  produce phantom negatives when CI runs outnumber real clones on a
+  given day
+- Monthly archive `organicClones` now sourced from `totalOrganicClones`
+  instead of global subtraction
+- Badge organic total uses `totalOrganicClones` (per-day accumulation)
+- Version bumped from 0.7.11 to 0.7.12
+
+### Added
+- **Schema migration v1→v2**: Converts boolean `lastSeenDates` to
+  delta-based `lastSeenCloneCounts` / `lastSeenViewCounts` maps,
+  seeding counts from existing `dailyHistory`
+- **Schema migration v2→v3**: Computes initial `totalOrganicClones`
+  from dailyHistory organic sums (takes max of per-day sum vs global
+  subtraction estimate)
+- `push` trigger on `main` branch with freshness check — skips
+  collection if last run was less than 60 minutes ago
+- `concurrency` group (`traffic-collection`, cancel-in-progress) to
+  prevent overlapping workflow runs
+- `repoCreatedAt` field: records GitHub repo creation date; used to
+  filter pre-repo Traffic API backfill entries (14 days of zeros)
+- `trackingSince` field: records when stat collection first started,
+  distinguishing "no data collected" from "zero traffic"
+- Pre-repo entry filtering: removes dailyHistory entries that predate
+  the repo's creation
+- Totals sanity repair: if cumulative totals fall below the sum of
+  dailyHistory entries (from the first-run seeding bug), raises them
+  to match — never lowers, safe for long-running installs
+
 ## [0.7.11-alpha] - 2026-02-25
 
 ### Added
