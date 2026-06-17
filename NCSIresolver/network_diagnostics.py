@@ -6,7 +6,9 @@ This module provides layered network diagnostic capabilities for testing connect
 at different network stack levels (ICMP, DNS, HTTP, HTTPS).
 """
 
+import ipaddress
 import logging
+import re
 import socket
 import subprocess
 import sys
@@ -567,23 +569,366 @@ class NetworkDiagnostics:
         
         return "\n".join(lines)
 
+# ---------------------------------------------------------------------------
+# IPv6 NCSI diagnostic (read-only)
+#
+# Windows tracks IPv4 and IPv6 connectivity per interface separately. This tool
+# fixes the IPv4 active web probe; it does nothing for IPv6. This diagnostic
+# reports *why* Windows may classify an interface's IPv6 as "local network" so a
+# user (or maintainer) can tell an unsolvable case (no global address -> router
+# fix) apart from a potentially solvable one (probe blocked).
+#
+# Strictly read-only: it reads addresses, reads registry values, and makes one
+# outbound HTTP GET. It never writes the registry, hosts file, or any state.
+# Designed never to raise -- every gatherer degrades to a best-effort result.
+# ---------------------------------------------------------------------------
+
+# Standard IPv6 scope ranges (RFC 4291 / RFC 4193).
+_IPV6_GLOBAL_UNICAST = ipaddress.ip_network("2000::/3")
+_IPV6_ULA = ipaddress.ip_network("fc00::/7")  # unique local (NAT66 hands these out)
+
+# Windows default IPv6 NCSI active web probe (Win10 1607+/Win11).
+_IPV6_PROBE_HOST = "ipv6.msftconnecttest.com"
+_IPV6_PROBE_PATH = "/connecttest.txt"
+_IPV6_PROBE_EXPECTED = "Microsoft Connect Test"
+
+_IPV6_NCSI_REGISTRY_VALUES = (
+    "ActiveWebProbeHostV6",
+    "ActiveWebProbePathV6",
+    "ActiveWebProbeContentV6",
+    "ActiveDnsProbeHostV6",
+    "ActiveDnsProbeContentV6",
+    "EnableActiveProbing",
+)
+
+
+def classify_ipv6_scope(address: str) -> str:
+    """
+    Classify a single IPv6 address by scope, from its prefix.
+
+    Note: this reads the address itself -- NOT the 'Addr Type' column from
+    `netsh`, which reports 'Other' for ULA/link-local and does not label scope.
+
+    Returns one of: 'global', 'ula', 'link-local', 'loopback', 'other', 'invalid'.
+    """
+    try:
+        # Strip any zone id (e.g. fe80::1%11) before parsing.
+        addr = ipaddress.IPv6Address(address.split("%", 1)[0])
+    except (ipaddress.AddressValueError, ValueError):
+        return "invalid"
+
+    if addr.is_loopback:
+        return "loopback"
+    if addr.is_link_local:
+        return "link-local"
+    if addr in _IPV6_ULA:
+        return "ula"
+    if addr in _IPV6_GLOBAL_UNICAST:
+        return "global"
+    return "other"
+
+
+def gather_ipv6_addresses() -> List[Dict[str, str]]:
+    """
+    Enumerate the machine's IPv6 addresses, each tagged with its scope.
+
+    Primary method: parse `netsh interface ipv6 show address` (Windows, read-only).
+    Fallback: socket.getaddrinfo. Best-effort -- returns [] on failure, never raises.
+    """
+    addresses: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(token: str) -> None:
+        # Validate by parsing, not by regex -- catches '::'-leading addresses
+        # (::1, ::ffff:..) that an anchored pattern would drop, and rejects
+        # non-address tokens (netsh columns like 'Other'/'Preferred'/'infinite').
+        scope = classify_ipv6_scope(token)
+        if scope == "invalid":
+            return
+        try:
+            key = str(ipaddress.IPv6Address(token.split("%", 1)[0]))
+        except (ipaddress.AddressValueError, ValueError):
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        addresses.append({"address": token, "scope": scope})
+
+    try:
+        if platform.system() == "Windows":
+            result = subprocess.run(
+                ["netsh", "interface", "ipv6", "show", "address"],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            for line in (result.stdout or "").splitlines():
+                for token in line.split():
+                    _add(token)
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug(f"netsh IPv6 enumeration failed: {e}")
+
+    # Fallback if netsh produced nothing useful.
+    if not addresses:
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6):
+                _add(info[4][0])
+        except (socket.gaierror, OSError) as e:
+            logger.debug(f"getaddrinfo IPv6 fallback failed: {e}")
+
+    return addresses
+
+
+def read_ipv6_ncsi_registry() -> Dict[str, Optional[str]]:
+    """
+    Read the current IPv6 NCSI probe registry values. READ-ONLY.
+
+    Returns a dict of value-name -> string value (or None if unset/unavailable).
+    Never writes; never raises.
+    """
+    values: Dict[str, Optional[str]] = {name: None for name in _IPV6_NCSI_REGISTRY_VALUES}
+    try:
+        import winreg  # Windows-only; import lazily so the module loads elsewhere.
+    except ImportError:
+        return values
+
+    key_path = r"SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet"
+    try:
+        reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ)
+    except OSError as e:
+        logger.debug(f"Could not open NlaSvc Internet key (read): {e}")
+        return values
+
+    try:
+        for name in _IPV6_NCSI_REGISTRY_VALUES:
+            try:
+                values[name] = str(winreg.QueryValueEx(reg_key, name)[0])
+            except FileNotFoundError:
+                values[name] = None
+    finally:
+        winreg.CloseKey(reg_key)
+
+    return values
+
+
+def probe_ipv6_active(host: str = _IPV6_PROBE_HOST, path: str = _IPV6_PROBE_PATH,
+                      timeout: float = 5.0) -> Dict[str, object]:
+    """
+    Replicate Windows' IPv6 active web probe over IPv6 only. READ-ONLY (one GET).
+
+    Forces AF_INET6 so we exercise the IPv6 path specifically. Returns a dict:
+    {attempted, success, status, matched_content, error}. Never raises.
+    """
+    result: Dict[str, object] = {
+        "attempted": False, "success": False,
+        "status": None, "matched_content": False, "error": None,
+    }
+    try:
+        infos = socket.getaddrinfo(host, 80, socket.AF_INET6, socket.SOCK_STREAM)
+    except (socket.gaierror, OSError) as e:
+        result["error"] = f"IPv6 DNS resolution failed: {e}"
+        return result
+    if not infos:
+        result["error"] = "No AAAA record resolved for probe host"
+        return result
+
+    sockaddr = infos[0][4]
+    sock = None
+    try:
+        result["attempted"] = True
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(sockaddr)
+        request = (f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+                   f"Connection: close\r\nUser-Agent: NCSI-Resolver-Diagnostic\r\n\r\n")
+        sock.sendall(request.encode("ascii"))
+
+        chunks = []
+        while True:
+            data = sock.recv(4096)
+            if not data:
+                break
+            chunks.append(data)
+            if sum(len(c) for c in chunks) > 65536:
+                break
+        raw = b"".join(chunks).decode("latin-1", errors="replace")
+
+        status_match = re.search(r"HTTP/\d\.\d\s+(\d{3})", raw)
+        if status_match:
+            result["status"] = int(status_match.group(1))
+        result["matched_content"] = _IPV6_PROBE_EXPECTED in raw
+        result["success"] = result["status"] == 200 and result["matched_content"]
+    except (socket.timeout, OSError) as e:
+        result["error"] = f"IPv6 probe connection failed: {e}"
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    return result
+
+
+def classify_ipv6_ncsi(addresses: List[Dict[str, str]],
+                       registry: Dict[str, Optional[str]],
+                       probe: Dict[str, object]) -> Dict[str, object]:
+    """
+    Pure classification of IPv6 NCSI state from gathered inputs.
+
+    Kept side-effect-free so it can be unit-tested with synthetic inputs.
+    Returns {verdict, headline, detail, tool_can_help}.
+
+    verdict in:
+      'NoIPv6'          - no IPv6 configured beyond loopback
+      'NoGlobalAddress' - only ULA/link-local (e.g. NAT66); router-side fix
+      'Healthy'         - has GUA and the active probe succeeded
+      'ProbeBlocked'    - has GUA but active probe failed (IPv6 twin of the
+                          IPv4 problem this tool solves; potentially fixable)
+      'Unknown'         - has GUA but the probe could not be attempted
+    """
+    scopes = {a["scope"] for a in addresses}
+    has_global = "global" in scopes
+    has_ula = "ula" in scopes
+    has_link_local = "link-local" in scopes
+    probe_attempted = bool(probe.get("attempted"))
+    probe_success = bool(probe.get("success"))
+
+    if not (has_global or has_ula or has_link_local):
+        return {
+            "verdict": "NoIPv6",
+            "headline": "No usable IPv6 address found (IPv6 may be disabled).",
+            "detail": ("No global, unique-local, or link-local IPv6 address was "
+                       "detected. Windows has no IPv6 to classify. This tool "
+                       "(IPv4-only) is not relevant to your IPv6 state."),
+            "tool_can_help": False,
+        }
+
+    if not has_global:
+        kind = "unique-local (ULA, e.g. NAT66)" if has_ula else "link-local only"
+        return {
+            "verdict": "NoGlobalAddress",
+            "headline": f"No global IPv6 address -- {kind}.",
+            "detail": ("Windows' passive NCSI probe downgrades an interface's IPv6 "
+                       "to 'local network' when it has no global unicast address "
+                       "(its 'NoGlobalAddress' condition). Redirecting the probe "
+                       "cannot satisfy a check that wants a real global address on "
+                       "the adapter, so this tool cannot fix it. The fix is "
+                       "router-side: obtain a global IPv6 prefix (native IPv6 or "
+                       "NPTv6) so the client gets a global address."),
+            "tool_can_help": False,
+        }
+
+    if probe_success:
+        return {
+            "verdict": "Healthy",
+            "headline": "Global IPv6 present and the active probe succeeded.",
+            "detail": ("A global IPv6 address is present and the IPv6 active web "
+                       "probe returned the expected content. IPv6 NCSI looks "
+                       "healthy; nothing for this tool to fix."),
+            "tool_can_help": False,
+        }
+
+    if probe_attempted:
+        return {
+            "verdict": "ProbeBlocked",
+            "headline": "Global IPv6 present but the active probe failed.",
+            "detail": ("A global IPv6 address is present, but the IPv6 active web "
+                       "probe did not return the expected content -- it may be "
+                       "intercepted or blocked. This is the IPv6 analog of the "
+                       "IPv4 problem this tool solves, so an IPv6 redirect could "
+                       "potentially help (pending verification on real hardware)."),
+            "tool_can_help": True,
+        }
+
+    return {
+        "verdict": "Unknown",
+        "headline": "Global IPv6 present; probe could not be attempted.",
+        "detail": ("A global IPv6 address is present but the active probe could "
+                   "not run (DNS resolution failed or no route). Insufficient "
+                   "information to classify the IPv6 NCSI state."),
+        "tool_can_help": False,
+    }
+
+
+def detect_ipv6_ncsi_state(timeout: float = 5.0) -> Dict[str, object]:
+    """
+    Orchestrate the read-only IPv6 NCSI diagnostic. Never raises.
+
+    Returns {addresses, registry, probe, classification}.
+    """
+    addresses = gather_ipv6_addresses()
+    registry = read_ipv6_ncsi_registry()
+    probe = probe_ipv6_active(timeout=timeout)
+    classification = classify_ipv6_ncsi(addresses, registry, probe)
+    return {
+        "addresses": addresses,
+        "registry": registry,
+        "probe": probe,
+        "classification": classification,
+    }
+
+
+def format_ipv6_ncsi_report(state: Dict[str, object]) -> str:
+    """Render the IPv6 NCSI diagnostic as an ASCII-only report."""
+    addresses = state.get("addresses", [])
+    registry = state.get("registry", {})
+    probe = state.get("probe", {})
+    cls = state.get("classification", {})
+
+    lines = []
+    lines.append("IPv6 NCSI Diagnostic")
+    lines.append("====================")
+
+    lines.append("\nIPv6 addresses by scope:")
+    if addresses:
+        for a in addresses:
+            lines.append(f"  [{a['scope']:>10}] {a['address']}")
+    else:
+        lines.append("  (none detected)")
+
+    lines.append("\nIPv6 NCSI registry values (read-only):")
+    for name, value in registry.items():
+        lines.append(f"  {name}: {value if value is not None else '(not set)'}")
+
+    lines.append("\nIPv6 active web probe (ipv6.msftconnecttest.com):")
+    if probe.get("attempted"):
+        status = probe.get("status")
+        lines.append(f"  Status: {status if status is not None else 'no response'}")
+        lines.append(f"  Expected content matched: {'YES' if probe.get('matched_content') else 'NO'}")
+        lines.append(f"  Result: {'SUCCESS' if probe.get('success') else 'FAILED'}")
+    else:
+        lines.append(f"  Not attempted ({probe.get('error') or 'unknown reason'})")
+
+    lines.append(f"\nVerdict: {cls.get('verdict', 'Unknown')}")
+    lines.append(f"  {cls.get('headline', '')}")
+    lines.append(f"  {cls.get('detail', '')}")
+    lines.append(f"\n  Can this (IPv4-only) tool help? {'POSSIBLY' if cls.get('tool_can_help') else 'NO'}")
+
+    return "\n".join(lines)
+
+
 # Example usage
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="NCSI Resolver Network Diagnostics")
+    parser.add_argument("--ipv6", action="store_true", help="Run the read-only IPv6 NCSI diagnostic and exit")
     parser.add_argument("--host", default="127.0.0.1", help="Host for local service tests")
     parser.add_argument("--port", type=int, default=80, help="Port for local service tests")
     parser.add_argument("--timeout", type=float, default=2.0, help="Timeout in seconds")
     parser.add_argument("--verbose", action="store_true", help="Show detailed results")
     
     args = parser.parse_args()
-    
+
+    # IPv6 NCSI diagnostic is a standalone, read-only path.
+    if args.ipv6:
+        print(format_ipv6_ncsi_report(detect_ipv6_ncsi_state(timeout=args.timeout)))
+        sys.exit(0)
+
     # Set up diagnostics
     diagnostics = NetworkDiagnostics(timeout=args.timeout)
-    
+
     # Run all tests
     diagnostics.run_all_tests(local_host=args.host, local_port=args.port)
-    
+
     # Print report
     print(diagnostics.format_report(verbose=args.verbose))

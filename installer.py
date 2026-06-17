@@ -700,6 +700,7 @@ def main():
     action_group.add_argument("--check", action="store_true", help="Check installation status")
     action_group.add_argument("--status", action="store_true", help="Alias for --check")
     action_group.add_argument("--diagnose", action="store_true", help="Run diagnostic checks without installing")
+    action_group.add_argument("--diagnose-ipv6", action="store_true", help="Run the read-only IPv6 NCSI diagnostic (no admin required)")
     
     # Additional options
     parser.add_argument("--install-dir", default=DEFAULT_INSTALL_DIR, help=f"Installation directory (default: {DEFAULT_INSTALL_DIR})")
@@ -848,6 +849,18 @@ def main():
         # Exit with appropriate code based on results
         if len(results['failed']) > 0:
             sys.exit(1)
+
+    elif getattr(args, 'diagnose_ipv6', False):
+        # Read-only IPv6 NCSI diagnostic (no admin, no state changes)
+        try:
+            from NCSIresolver.network_diagnostics import (
+                detect_ipv6_ncsi_state, format_ipv6_ncsi_report,
+            )
+        except ImportError:
+            from network_diagnostics import (
+                detect_ipv6_ncsi_state, format_ipv6_ncsi_report,
+            )
+        print(format_ipv6_ncsi_report(detect_ipv6_ncsi_state()))
 
 if __name__ == "__main__":
     main()

@@ -5,6 +5,22 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.13-alpha] - 2026-06-17
+
+### Added
+- `--diagnose-ipv6`: read-only IPv6 NCSI diagnostic that reports per-interface
+  IPv6 address scope (global / unique-local / link-local / loopback), the
+  current IPv6 NCSI probe registry values, a live IPv6 active-probe result, and
+  a plain-English verdict explaining why Windows may classify IPv6 as "local
+  network" -- one of `NoIPv6`, `NoGlobalAddress`, `Healthy`, `ProbeBlocked`, or
+  `Unknown` (issue #9). The tool remains IPv4-only for NCSI *redirection*; this
+  is diagnostic-only (Phase 1 of IPv6 support).
+- Read-only IPv6 NCSI functions in `network_diagnostics.py`
+  (`detect_ipv6_ncsi_state` and helpers) and a unit test suite
+
+### Changed
+- Version bumped from 0.7.12 to 0.7.13
+
 ## [0.7.12-alpha] - 2026-02-27
 
 ### Changed
