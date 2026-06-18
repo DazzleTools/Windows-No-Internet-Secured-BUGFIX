@@ -5,6 +5,24 @@ All notable changes to the "Windows (No Internet, Secured) BUGFIX" NCSI Resolver
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.14-alpha] - 2026-06-17
+
+### Added
+- `--configure-ipv6` (**EXPERIMENTAL**): applies the IPv6 NCSI redirect — points
+  the IPv6 active web probe (`ipv6.msftconnecttest.com`) at a local target so the
+  local server answers it. Diagnostic-gated: refuses and makes no changes when
+  the machine has no global IPv6 address (that case is router-side, not fixable
+  here). Fully reversible via `--uninstall` (issue #9, Phase 2). Unverified on
+  real global-IPv6 hardware — pending reporter testing.
+- Dual-stack NCSI server: the service now binds a single IPv6 socket
+  (`::`, `IPV6_V6ONLY=0`) that answers both the IPv4 and IPv6 probes, falling
+  back to IPv4-only if the dual-stack bind fails (no regression to V4)
+- `tests/test_ipv6_dualstack_server.py` (AC-O3) and the reporter-protocol
+  checklist (`v0.7.14__Phase2__ipv6-redirect-reporter-protocol.md`)
+
+### Changed
+- Version bumped from 0.7.13 to 0.7.14
+
 ## [0.7.13-alpha] - 2026-06-17
 
 ### Added

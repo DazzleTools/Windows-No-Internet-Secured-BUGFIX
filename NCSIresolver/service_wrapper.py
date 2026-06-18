@@ -228,28 +228,55 @@ def get_local_ip():
         return "0.0.0.0"  # Fall back to all interfaces
 
 # Enhanced port binding with retries and detailed error reporting
+class DualStackHTTPServer(HTTPServer):
+    """HTTPServer bound to IPv6 that ALSO accepts IPv4 (IPV6_V6ONLY=0).
+
+    A single socket on :: answers both the IPv4 NCSI probe (hosts redirect to a
+    local IPv4, received as ::ffff:<ipv4>) and the IPv6 probe
+    (ipv6.msftconnecttest.com -> local IPv6), so the running service serves both
+    families. server_bind RAISES if it cannot clear IPV6_V6ONLY -- the caller
+    then falls back to an IPv4 socket rather than silently dropping IPv4.
+
+    (Intentionally a small standalone class so the service stays import-light;
+    ncsi_server.py has a parallel copy for the standalone server + tests.)
+    """
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def bind_server(host, port, max_retries=3):
     """
-    Attempt to bind the server to the specified host and port with retries.
-    
+    Bind the NCSI server, preferring a dual-stack (IPv6+IPv4) socket so BOTH the
+    IPv4 and IPv6 NCSI probes are answered. Falls back to IPv4-only 0.0.0.0 (the
+    long-standing behavior), then to the specific host.
+
     Returns:
         HTTPServer or None if all attempts fail
     """
-    # FIX: Always try to bind to all interfaces first
-    logger.debug(f"Attempting to bind server to 0.0.0.0:{port} (all interfaces)")
-    
     for attempt in range(max_retries):
+        # 1. Prefer dual-stack on :: (answers both families on one socket)
         try:
-            # FIX: Always bind to 0.0.0.0 (all interfaces) for maximum compatibility
+            server = DualStackHTTPServer(("::", port), NCSIHandler)
+            logger.info(f"Successfully bound dual-stack server to [::]:{port} on attempt {attempt+1}")
+            return server
+        except Exception as e:
+            logger.warning(f"Dual-stack bind to [::]:{port} failed on attempt {attempt+1} "
+                           f"(falling back to IPv4): {e}")
+
+        # 2. Fall back to IPv4 all-interfaces (maximum compatibility)
+        try:
             server = HTTPServer(("0.0.0.0", port), NCSIHandler)
-            logger.info(f"Successfully bound server to 0.0.0.0:{port} on attempt {attempt+1}")
+            logger.info(f"Successfully bound IPv4 server to 0.0.0.0:{port} on attempt {attempt+1}")
             return server
         except Exception as e:
             logger.error(f"Failed to bind to 0.0.0.0:{port} on attempt {attempt+1}: {e}")
             logger.debug(f"Binding error details: {traceback.format_exc()}")
-            
-            # If binding to all interfaces fails, try the specific host
-            if attempt == max_retries - 1 and host != "0.0.0.0":
+
+            # 3. Last attempt: try the specific host
+            if attempt == max_retries - 1 and host not in ("0.0.0.0", "::"):
                 try:
                     logger.debug(f"Trying to bind to specific interface {host}:{port} as fallback")
                     server = HTTPServer((host, port), NCSIHandler)
@@ -258,11 +285,11 @@ def bind_server(host, port, max_retries=3):
                 except Exception as e2:
                     logger.error(f"Failed to bind to fallback {host}:{port}: {e2}")
                     logger.debug(f"Fallback binding error details: {traceback.format_exc()}")
-            
-            # Add delay between attempts
-            if attempt < max_retries - 1:
-                time.sleep(1)
-    
+
+        # Add delay between attempts
+        if attempt < max_retries - 1:
+            time.sleep(1)
+
     return None
 
 # Main service code with enhanced error handling

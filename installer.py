@@ -701,6 +701,7 @@ def main():
     action_group.add_argument("--status", action="store_true", help="Alias for --check")
     action_group.add_argument("--diagnose", action="store_true", help="Run diagnostic checks without installing")
     action_group.add_argument("--diagnose-ipv6", action="store_true", help="Run the read-only IPv6 NCSI diagnostic (no admin required)")
+    action_group.add_argument("--configure-ipv6", action="store_true", help="EXPERIMENTAL: apply the IPv6 NCSI redirect (admin; reversible via --uninstall)")
     
     # Additional options
     parser.add_argument("--install-dir", default=DEFAULT_INSTALL_DIR, help=f"Installation directory (default: {DEFAULT_INSTALL_DIR})")
@@ -861,6 +862,28 @@ def main():
                 detect_ipv6_ncsi_state, format_ipv6_ncsi_report,
             )
         print(format_ipv6_ncsi_report(detect_ipv6_ncsi_state()))
+
+    elif getattr(args, 'configure_ipv6', False):
+        # EXPERIMENTAL IPv6 NCSI redirect (mutating; admin required, reversible)
+        if not is_admin():
+            logger.info("Administrative privileges required for --configure-ipv6, requesting elevation...")
+            run_as_admin(sys.argv[0], "--configure-ipv6", "--nobanner")
+            return
+        try:
+            from system_config import configure_system_ipv6
+        except ImportError:
+            print("ERROR: configure_system_ipv6 unavailable (system_config not importable).")
+            sys.exit(1)
+        print("\nEXPERIMENTAL: applying the IPv6 NCSI redirect (issue #9).")
+        print("Reversible via 'installer.py --uninstall' (or a system_config reset).")
+        if configure_system_ipv6():
+            print("\nApplied. Verify with 'installer.py --diagnose-ipv6' and")
+            print("'Get-NetConnectionProfile | Format-List Name, IPv6Connectivity'.")
+        else:
+            print("\nNOT applied (see log). Most commonly: no global IPv6 address on this")
+            print("machine -- that case is router-side and not fixable by this tool. Run")
+            print("'installer.py --diagnose-ipv6' for the verdict.")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

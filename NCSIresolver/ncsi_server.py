@@ -288,16 +288,36 @@ def get_local_ip() -> Optional[str]:
         return None
 
 
-def create_server(host: str = None, port: int = DEFAULT_PORT, 
-                  verify_connectivity: bool = True) -> HTTPServer:
+class DualStackHTTPServer(HTTPServer):
+    """HTTPServer bound to IPv6 that ALSO accepts IPv4 (IPV6_V6ONLY=0).
+
+    A single socket on :: answers both the IPv4 NCSI probe (received as
+    ::ffff:<ipv4>) and the IPv6 probe, so one server serves both families.
+    server_bind RAISES if it cannot clear IPV6_V6ONLY so the caller can fall
+    back to an IPv4 socket rather than silently dropping IPv4. (service_wrapper.py
+    has a parallel copy so the service stays import-light.)
+    """
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def create_server(host: str = None, port: int = DEFAULT_PORT,
+                  verify_connectivity: bool = True,
+                  dual_stack: bool = False) -> HTTPServer:
     """
     Create and configure the NCSI HTTP server.
-    
+
     Args:
         host: Host address to bind to (None for all interfaces)
         port: Port to listen on
         verify_connectivity: Whether to verify actual connectivity
-        
+        dual_stack: Bind a single IPv6 socket that also accepts IPv4 (answers
+            both the IPv4 and IPv6 NCSI probes). Falls back to an IPv4 socket if
+            the dual-stack bind fails.
+
     Returns:
         HTTPServer: The configured server instance
     """
@@ -305,13 +325,22 @@ def create_server(host: str = None, port: int = DEFAULT_PORT,
     if verify_connectivity:
         checker = ConnectivityChecker()
         NCSIHandler.connectivity_checker = checker
-    
+
     NCSIHandler.verify_real_connectivity = verify_connectivity
-    
+
+    # Dual-stack: one socket on :: serves both families.
+    if dual_stack:
+        try:
+            server = DualStackHTTPServer((host or "::", port), NCSIHandler)
+            logger.info(f"Dual-stack server created on [{host or '::'}]:{port}")
+            return server
+        except Exception as e:
+            logger.warning(f"Dual-stack bind failed ({e}); falling back to IPv4")
+
     # Determine host address if not specified
     if host is None:
         host = get_local_ip() or "0.0.0.0"
-    
+
     # Create and return the server
     try:
         server = HTTPServer((host, port), NCSIHandler)
