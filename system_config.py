@@ -45,7 +45,18 @@ logger = logging.getLogger('system_config')
 HOSTS_FILE_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 NCSI_REGISTRY_KEY = r"SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet"
 DEFAULT_NCSI_HOST = "www.msftconnecttest.com"
+DEFAULT_NCSI_HOST_V6 = "ipv6.msftconnecttest.com"  # IPv6 active web probe host (differs from V4)
 DEFAULT_NCSI_IP = "127.0.0.1"
+# NCSI registry string values this tool may modify. Backed up and restored as a
+# SET so the existing reset/uninstall path cleanly reverses both the IPv4 and the
+# IPv6 redirect. (The full `reg export` in backup_registry_values is the
+# belt-and-suspenders safety net; this list drives the per-value restore.)
+NCSI_MANAGED_VALUES = (
+    "ActiveWebProbeHost",
+    "ActiveWebProbePath",
+    "ActiveWebProbeHostV6",
+    "ActiveWebProbePathV6",
+)
 TIMEOUT = 10  # seconds
 BACKUP_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), "NCSI_Resolver", "Backups")
 
@@ -143,22 +154,16 @@ def backup_registry_values() -> Dict[str, Dict[str, Tuple[int, Union[str, bytes]
             
             # Dictionary to store original values
             original_values[NCSI_REGISTRY_KEY] = {}
-            
-            # Check for existing values
-            try:
-                value, value_type = winreg.QueryValueEx(reg_key, "ActiveWebProbeHost")
-                original_values[NCSI_REGISTRY_KEY]["ActiveWebProbeHost"] = (value_type, value)
-                logger.info(f"Backing up existing registry value: ActiveWebProbeHost = {value}")
-            except FileNotFoundError:
-                logger.info("Registry value 'ActiveWebProbeHost' did not exist before modification")
-            
-            try:
-                value, value_type = winreg.QueryValueEx(reg_key, "ActiveWebProbePath")
-                original_values[NCSI_REGISTRY_KEY]["ActiveWebProbePath"] = (value_type, value)
-                logger.info(f"Backing up existing registry value: ActiveWebProbePath = {value}")
-            except FileNotFoundError:
-                logger.info("Registry value 'ActiveWebProbePath' did not exist before modification")
-            
+
+            # Check for existing values (V4 + V6 managed set)
+            for value_name in NCSI_MANAGED_VALUES:
+                try:
+                    value, value_type = winreg.QueryValueEx(reg_key, value_name)
+                    original_values[NCSI_REGISTRY_KEY][value_name] = (value_type, value)
+                    logger.info(f"Backing up existing registry value: {value_name} = {value}")
+                except FileNotFoundError:
+                    logger.info(f"Registry value '{value_name}' did not exist before modification")
+
             # Close the key
             winreg.CloseKey(reg_key)
         
@@ -314,7 +319,68 @@ def update_hosts_file(hostname: str = DEFAULT_NCSI_HOST, ip: str = None) -> bool
                 logger.info("Restored hosts file from backup after error")
             except Exception as restore_error:
                 logger.error(f"Error restoring hosts file from backup: {restore_error}")
-        
+
+        return False
+
+def update_hosts_file_v6(hostname: str = DEFAULT_NCSI_HOST_V6, ipv6: str = "::1") -> bool:
+    """
+    Add or update an IPv6 hosts-file entry redirecting the IPv6 NCSI probe host.
+
+    Mirrors update_hosts_file but matches IPv6 literals (the V4 version's regex is
+    dotted-quad only). Uses the same backup_hosts_file(); the (extended)
+    restore_hosts_file() removes this entry on reset/uninstall.
+
+    Args:
+        hostname: IPv6 NCSI probe host (default: ipv6.msftconnecttest.com)
+        ipv6: IPv6 address to redirect to (e.g. the interface global address; ::1 fallback)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not is_admin():
+        logger.error("Administrative privileges required to update hosts file")
+        return False
+
+    hosts_path = Path(HOSTS_FILE_PATH)
+    if not hosts_path.exists():
+        logger.error(f"Hosts file not found at {HOSTS_FILE_PATH}")
+        return False
+
+    backup_path = backup_hosts_file()
+    if not backup_path:
+        logger.warning("Could not create hosts file backup, proceeding with caution")
+
+    try:
+        with open(hosts_path, 'r') as f:
+            hosts_content = f.read()
+
+        # Match "<ipv6-literal> <hostname>" (hex groups + colons, not dotted-quad)
+        pattern = re.compile(rf'^\s*[0-9A-Fa-f:]+\s+{re.escape(hostname)}(?:\s|$)', re.MULTILINE)
+        if pattern.search(hosts_content):
+            hosts_content = pattern.sub(f"{ipv6} {hostname}", hosts_content)
+            logger.info(f"Updated hosts file IPv6 entry for {hostname} to {ipv6}")
+        else:
+            if not hosts_content.endswith('\n'):
+                hosts_content += '\n'
+            hosts_content += f"{ipv6} {hostname}\n"
+            logger.info(f"Added new hosts file IPv6 entry for {hostname} to {ipv6}")
+
+        with open(hosts_path, 'w') as f:
+            f.write(hosts_content)
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error updating hosts file (IPv6): {e}")
+        if backup_path and os.path.exists(backup_path):
+            try:
+                with open(backup_path, 'r') as f:
+                    backup_content = f.read()
+                with open(hosts_path, 'w') as f:
+                    f.write(backup_content)
+                logger.info("Restored hosts file from backup after error")
+            except Exception as restore_error:
+                logger.error(f"Error restoring hosts file from backup: {restore_error}")
         return False
 
 def update_ncsi_registry(probe_host: str = None, probe_path: str = "/ncsi.txt", port: int = 80) -> bool:
@@ -375,7 +441,63 @@ def update_ncsi_registry(probe_host: str = None, probe_path: str = "/ncsi.txt", 
                 logger.info("Restored registry from backup after error")
             except Exception as restore_error:
                 logger.error(f"Error restoring registry from backup: {restore_error}")
-        
+
+        return False
+
+def update_ncsi_registry_v6(probe_host: str, probe_path: str = "/connecttest.txt", port: int = 80) -> bool:
+    """
+    Update the Windows registry IPv6 NCSI probe values (ActiveWebProbeHostV6 /
+    ActiveWebProbePathV6) to redirect the IPv6 active web probe.
+
+    Mirrors update_ncsi_registry for the V6 values. Backs up first (the existing
+    backup covers the V6 values via NCSI_MANAGED_VALUES), so the existing
+    reset/uninstall path reverses this with no new restore code.
+
+    Args:
+        probe_host: IPv6 address (or host) to point the V6 probe at -- typically
+            the interface's global address. Required; no auto-default.
+        probe_path: Path for the V6 probe (Windows default: connecttest.txt)
+        port: Port for the V6 probe
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not is_admin():
+        logger.error("Administrative privileges required to update registry")
+        return False
+    if not probe_host:
+        logger.error("update_ncsi_registry_v6 requires a probe_host (IPv6 target)")
+        return False
+
+    # Backup existing registry values (covers V6 via the managed-value set)
+    original_values = backup_registry_values()
+
+    try:
+        reg_key = winreg.CreateKeyEx(
+            winreg.HKEY_LOCAL_MACHINE, NCSI_REGISTRY_KEY, 0, winreg.KEY_WRITE
+        )
+
+        # IPv6 literals take bracket notation when a non-default port is appended.
+        if port != 80:
+            formatted_host = f"[{probe_host}]:{port}"
+        else:
+            formatted_host = probe_host
+
+        winreg.SetValueEx(reg_key, "ActiveWebProbeHostV6", 0, winreg.REG_SZ, formatted_host)
+        winreg.SetValueEx(reg_key, "ActiveWebProbePathV6", 0, winreg.REG_SZ, probe_path)
+        winreg.CloseKey(reg_key)
+
+        logger.info(f"Updated IPv6 NCSI registry settings to use {formatted_host}{probe_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error updating IPv6 registry: {e}")
+        if original_values:
+            try:
+                restore_registry_from_backup(original_values)
+                logger.info("Restored registry from backup after error")
+            except Exception as restore_error:
+                logger.error(f"Error restoring registry from backup: {restore_error}")
         return False
 
 def check_ncsi_registry() -> Dict[str, str]:
@@ -396,17 +518,13 @@ def check_ncsi_registry() -> Dict[str, str]:
             winreg.KEY_READ
         )
         
-        # Read registry values
-        try:
-            result["ActiveWebProbeHost"] = winreg.QueryValueEx(reg_key, "ActiveWebProbeHost")[0]
-        except FileNotFoundError:
-            result["ActiveWebProbeHost"] = "default (not set)"
-        
-        try:
-            result["ActiveWebProbePath"] = winreg.QueryValueEx(reg_key, "ActiveWebProbePath")[0]
-        except FileNotFoundError:
-            result["ActiveWebProbePath"] = "default (not set)"
-        
+        # Read managed registry values (V4 + V6)
+        for value_name in NCSI_MANAGED_VALUES:
+            try:
+                result[value_name] = winreg.QueryValueEx(reg_key, value_name)[0]
+            except FileNotFoundError:
+                result[value_name] = "default (not set)"
+
         # Close the key
         winreg.CloseKey(reg_key)
         
@@ -461,47 +579,23 @@ def restore_registry_from_backup(original_values: Dict[str, Dict[str, Tuple[int,
             winreg.KEY_WRITE
         )
         
-        # If we have original values, restore them
-        if original_values and NCSI_REGISTRY_KEY in original_values:
-            values = original_values[NCSI_REGISTRY_KEY]
-            
-            if "ActiveWebProbeHost" in values:
-                value_type, value = values["ActiveWebProbeHost"]
-                winreg.SetValueEx(reg_key, "ActiveWebProbeHost", 0, value_type, value)
-                logger.info(f"Restored original registry value: ActiveWebProbeHost = {value}")
+        # Restore each managed value (V4 + V6) to its original, or delete it if
+        # it did not exist before we modified it. Looping over the managed set
+        # means the existing reset/uninstall path reverses the IPv6 redirect too.
+        values = original_values.get(NCSI_REGISTRY_KEY, {}) if original_values else {}
+        for value_name in NCSI_MANAGED_VALUES:
+            if value_name in values:
+                value_type, value = values[value_name]
+                winreg.SetValueEx(reg_key, value_name, 0, value_type, value)
+                logger.info(f"Restored original registry value: {value_name} = {value}")
             else:
-                # If the key didn't exist originally, delete it
+                # Either no backup, or this value did not exist originally -> remove our addition
                 try:
-                    winreg.DeleteValue(reg_key, "ActiveWebProbeHost")
-                    logger.info("Removed registry value: ActiveWebProbeHost")
+                    winreg.DeleteValue(reg_key, value_name)
+                    logger.info(f"Removed registry value: {value_name}")
                 except FileNotFoundError:
                     pass
-            
-            if "ActiveWebProbePath" in values:
-                value_type, value = values["ActiveWebProbePath"]
-                winreg.SetValueEx(reg_key, "ActiveWebProbePath", 0, value_type, value)
-                logger.info(f"Restored original registry value: ActiveWebProbePath = {value}")
-            else:
-                # If the key didn't exist originally, delete it
-                try:
-                    winreg.DeleteValue(reg_key, "ActiveWebProbePath")
-                    logger.info("Removed registry value: ActiveWebProbePath")
-                except FileNotFoundError:
-                    pass
-        else:
-            # If we don't have original values, just delete our added values
-            try:
-                winreg.DeleteValue(reg_key, "ActiveWebProbeHost")
-                logger.info("Removed registry value: ActiveWebProbeHost")
-            except FileNotFoundError:
-                pass
-            
-            try:
-                winreg.DeleteValue(reg_key, "ActiveWebProbePath")
-                logger.info("Removed registry value: ActiveWebProbePath")
-            except FileNotFoundError:
-                pass
-        
+
         # Close the key
         winreg.CloseKey(reg_key)
         
@@ -554,7 +648,7 @@ def restore_hosts_file() -> bool:
                 current_content = f.read()
             
             # Check if our entry is in the current hosts file
-            pattern = re.compile(rf'^\s*\d+\.\d+\.\d+\.\d+\s+{re.escape(DEFAULT_NCSI_HOST)}(?:\s|$).*$\n?', re.MULTILINE)
+            pattern = re.compile(rf'^\s*[0-9A-Fa-f.:]+\s+(?:{re.escape(DEFAULT_NCSI_HOST)}|{re.escape(DEFAULT_NCSI_HOST_V6)})(?:\s|$).*$\n?', re.MULTILINE)
             
             if pattern.search(current_content):
                 # Remove only our entry
@@ -600,7 +694,7 @@ def restore_hosts_file() -> bool:
                 current_content = f.read()
             
             # Check if our entry is in the current hosts file
-            pattern = re.compile(rf'^\s*\d+\.\d+\.\d+\.\d+\s+{re.escape(DEFAULT_NCSI_HOST)}(?:\s|$).*$\n?', re.MULTILINE)
+            pattern = re.compile(rf'^\s*[0-9A-Fa-f.:]+\s+(?:{re.escape(DEFAULT_NCSI_HOST)}|{re.escape(DEFAULT_NCSI_HOST_V6)})(?:\s|$).*$\n?', re.MULTILINE)
             
             if pattern.search(current_content):
                 # Remove only our entry
@@ -626,7 +720,7 @@ def restore_hosts_file() -> bool:
                 hosts_content = f.read()
             
             # Remove the NCSI host entry
-            pattern = re.compile(rf'^\s*\d+\.\d+\.\d+\.\d+\s+{re.escape(DEFAULT_NCSI_HOST)}(?:\s|$).*$\n?', re.MULTILINE)
+            pattern = re.compile(rf'^\s*[0-9A-Fa-f.:]+\s+(?:{re.escape(DEFAULT_NCSI_HOST)}|{re.escape(DEFAULT_NCSI_HOST_V6)})(?:\s|$).*$\n?', re.MULTILINE)
             hosts_content = pattern.sub('', hosts_content)
             
             with open(hosts_path, 'w') as f:
@@ -939,7 +1033,90 @@ def configure_system(probe_host: str = None,
         logger.info(f"  Hosts file redirect: {DEFAULT_NCSI_HOST} -> {hosts_redirect or 'not set'}")
     else:
         logger.error("System configuration failed")
-    
+
+    return success
+
+def configure_system_ipv6(target_ipv6: str = None, probe_path: str = "/connecttest.txt",
+                          port: int = 80, restart_services: bool = True,
+                          allow_loopback: bool = False) -> bool:
+    """
+    Configure the IPv6 NCSI redirect: point the IPv6 active web probe
+    (ipv6.msftconnecttest.com) at a local target so the local server answers it.
+
+    EXPERIMENTAL (Phase 2, issue #9). Diagnostic-gated by design: if the machine
+    has no global IPv6 address (GUA), this refuses and makes NO changes -- the
+    redirect cannot satisfy Windows' passive 'NoGlobalAddress' check, which is a
+    router-side problem. Fully reversible via the existing reset/uninstall path
+    (registry + hosts cleanup already cover the V6 values).
+
+    Args:
+        target_ipv6: IPv6 address to redirect the probe to. If None, the
+            interface's global address is auto-discovered.
+        probe_path: V6 probe path (Windows default: connecttest.txt)
+        port: V6 probe port
+        restart_services: whether to restart NlaSvc + refresh network
+        allow_loopback: permit ::1 as the target (default False -- loopback is
+            unlikely to be credited to the real interface; opt-in for testing)
+
+    Returns:
+        bool: True if the redirect was applied, False otherwise
+    """
+    if not is_admin():
+        logger.warning("Administrative privileges required to configure IPv6 NCSI")
+        return False
+
+    # Discover a global IPv6 address if no explicit target was given.
+    if target_ipv6 is None:
+        globals_found = []
+        try:
+            try:
+                from NCSIresolver.network_diagnostics import gather_ipv6_addresses
+            except ImportError:
+                from network_diagnostics import gather_ipv6_addresses
+            globals_found = [a["address"].split("%", 1)[0]
+                             for a in gather_ipv6_addresses() if a["scope"] == "global"]
+        except Exception as e:
+            logger.error(f"Could not enumerate IPv6 addresses: {e}")
+
+        if not globals_found:
+            logger.error(
+                "No global IPv6 address (GUA) found. The IPv6 redirect cannot help "
+                "without a GUA -- this is a router-side issue (NoGlobalAddress). Run "
+                "'installer.py --diagnose-ipv6' for details. Aborting (no changes made)."
+            )
+            return False
+        target_ipv6 = globals_found[0]
+        logger.info(f"Auto-selected IPv6 target (global address): {target_ipv6}")
+
+    # Guard against an accidental loopback target unless explicitly allowed.
+    if target_ipv6 == "::1" and not allow_loopback:
+        logger.error(
+            "Refusing to redirect to ::1 by default (loopback is unlikely to be "
+            "credited to the real interface). Pass allow_loopback=True to override."
+        )
+        return False
+
+    success = True
+    if not update_hosts_file_v6(DEFAULT_NCSI_HOST_V6, target_ipv6):
+        success = False
+    if not update_ncsi_registry_v6(target_ipv6, probe_path, port):
+        success = False
+
+    if restart_services:
+        if not restart_network_service():
+            success = False
+        if not refresh_network():
+            logger.warning("Failed to refresh network, continuing with other operations")
+
+    if success:
+        logger.info(
+            f"IPv6 NCSI redirect applied: {DEFAULT_NCSI_HOST_V6} -> {target_ipv6} "
+            f"(probe path {probe_path}). EXPERIMENTAL. Reverse with "
+            f"'installer.py --uninstall' (or system_config reset). Registry backup "
+            f"saved under {BACKUP_DIR}."
+        )
+    else:
+        logger.error("IPv6 NCSI configuration failed (see log). Reverse with reset/uninstall.")
     return success
 
 def check_configuration() -> Dict[str, Union[str, bool]]:
@@ -985,6 +1162,11 @@ def create_windows_defaults_reg(target_path: str) -> bool:
 "ActiveWebProbeHost"="www.msftconnecttest.com"
 "ActiveWebProbePath"="connecttest.txt"
 "ActiveWebProbeContent"="Microsoft Connect Test"
+"ActiveWebProbeHostV6"="ipv6.msftconnecttest.com"
+"ActiveWebProbePathV6"="connecttest.txt"
+"ActiveWebProbeContentV6"="Microsoft Connect Test"
+"ActiveDnsProbeHostV6"="dns.msftncsi.com"
+"ActiveDnsProbeContentV6"="fd3e:4f5a:5b81::1"
 "EnableActiveHTTPS"=dword:00000001
 """
         
